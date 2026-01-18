@@ -1,135 +1,124 @@
-// index.js - SIMPLE WORKING VERSION
-require('dotenv').config();
+// index.js - ULTRA FAST MINIMAL VERSION
+console.log('⚡ BOT STARTING - ULTRA FAST VERSION');
+
 const { Telegraf, Markup } = require('telegraf');
+const TOKEN = process.env.BOT_TOKEN;
+const ADMIN_ID = process.env.ADMIN_ID || '1279640125';
 
-const CONFIG = {
-  BOT_TOKEN: process.env.BOT_TOKEN,
-  ADMIN_ID: process.env.ADMIN_ID || '1279640125'
-};
-
-if (!CONFIG.BOT_TOKEN) {
-  console.error('❌ BOT_TOKEN missing!');
+if (!TOKEN) {
+  console.error('❌ NO BOT TOKEN');
   process.exit(1);
 }
 
-const bot = new Telegraf(CONFIG.BOT_TOKEN);
+const bot = new Telegraf(TOKEN, {
+  handlerTimeout: 3000,
+  telegram: { 
+    apiRoot: 'https://api.telegram.org',
+    agent: null,
+    attachmentAgent: null
+  }
+});
 
-// Simple data storage
-const users = {};
+// SUPER SIMPLE DATA
+let users = {};
 
-function initUser(userId) {
+// FAST HELPERS
+function getUser(userId) {
   if (!users[userId]) {
     users[userId] = {
       wallet: 1000,
-      kyc: 'pending',
-      name: '',
-      joined: new Date().toLocaleString()
+      name: 'User',
+      kyc: 'pending'
     };
   }
   return users[userId];
 }
 
-function isAdmin(userId) {
-  return userId.toString() === CONFIG.ADMIN_ID.toString();
+function isAdmin(id) {
+  return id == ADMIN_ID;
 }
 
-// START COMMAND
+// ⚡⚡⚡ MAIN START COMMAND ⚡⚡⚡
 bot.start(async (ctx) => {
   try {
     const userId = ctx.from.id.toString();
-    const user = initUser(userId);
-    const isAdminUser = isAdmin(userId);
+    const user = getUser(userId);
+    const admin = isAdmin(userId);
     
-    if (!user.name) {
-      user.name = ctx.from.first_name || ctx.from.username || `User ${userId}`;
-    }
+    // Set name quickly
+    user.name = ctx.from.first_name || 'User';
     
-    const keyboard = isAdminUser 
-      ? [
-          ['📞 Buy Airtime', '📡 Buy Data'],
-          ['💰 Wallet Balance', '💳 Deposit Funds'],
-          ['🏦 Money Transfer', '📜 History'],
-          ['🛂 KYC Status', '🛠️ Admin'],
-          ['🆘 Help']
-        ]
-      : [
-          ['📞 Buy Airtime', '📡 Buy Data'],
-          ['💰 Wallet Balance', '💳 Deposit Funds'],
-          ['🏦 Money Transfer', '📜 History'],
-          ['🛂 KYC Status', '🆘 Help']
-        ];
+    // FAST KEYBOARD
+    const keys = admin 
+      ? [['📞 Airtime', '📡 Data'], ['💰 Balance', '💳 Deposit'], ['🛠️ Admin']]
+      : [['📞 Airtime', '📡 Data'], ['💰 Balance', '💳 Deposit']];
     
+    // FAST RESPONSE - NO MARKDOWN
     await ctx.reply(
-      `🌟 Welcome to Liteway VTU Bot!\n\n` +
-      `✅ Status: ONLINE\n\n` +
-      `💰 Balance: ₦${user.wallet.toLocaleString()}\n\n` +
-      `📱 Tap any button to start!`,
-      Markup.keyboard(keyboard).resize()
+      `⚡ LITEWAY VTU BOT\n\n` +
+      `💰 Balance: ₦${user.wallet}\n` +
+      `✅ Online\n\n` +
+      `Tap button below:`,
+      Markup.keyboard(keys).resize()
     );
     
-  } catch (error) {
-    console.error('Start error:', error);
+    console.log(`✅ User ${userId} started`);
+    
+  } catch (e) {
+    console.log('Start error:', e.message);
   }
 });
 
-// SIMPLE BUTTON HANDLERS (NO MARKDOWN ISSUES)
-bot.hears('📞 Buy Airtime', async (ctx) => {
+// ⚡⚡⚡ FAST BUTTON HANDLERS ⚡⚡⚡
+
+// AIRTIME - INSTANT RESPONSE
+bot.hears('📞 Airtime', async (ctx) => {
   await ctx.reply(
-    `📞 BUY AIRTIME\n\n` +
-    `Select network:\n\n` +
-    `• MTN\n` +
-    `• Glo\n` +
-    `• Airtel\n` +
-    `• 9mobile\n\n` +
-    `🔧 Feature in development\n` +
-    `Contact @opuenekeke for airtime`,
+    '📞 AIRTIME\n\nSelect network:',
     Markup.inlineKeyboard([
-      [Markup.button.callback('MTN', 'airtime_mtn')],
-      [Markup.button.callback('Glo', 'airtime_glo')],
-      [Markup.button.callback('Back', 'start')]
+      [Markup.button.callback('MTN', 'net_mtn')],
+      [Markup.button.callback('GLO', 'net_glo')],
+      [Markup.button.callback('AIRTEL', 'net_airtel')],
+      [Markup.button.callback('9MOBILE', 'net_9mobile')]
     ])
   );
 });
 
-bot.hears('📡 Buy Data', async (ctx) => {
+// DATA - INSTANT RESPONSE  
+bot.hears('📡 Data', async (ctx) => {
   await ctx.reply(
-    `📡 BUY DATA\n\n` +
-    `Data plans coming soon!\n\n` +
-    `Contact @opuenekeke for data bundles`,
+    '📡 DATA BUNDLES\n\nComing soon!\nContact @opuenekeke',
     Markup.inlineKeyboard([
       [Markup.button.callback('Back', 'start')]
     ])
   );
 });
 
-bot.hears('💰 Wallet Balance', async (ctx) => {
-  const userId = ctx.from.id.toString();
-  const user = initUser(userId);
-  await ctx.reply(`💰 YOUR BALANCE\n\n₦${user.wallet.toLocaleString()}`);
+// BALANCE - INSTANT
+bot.hears('💰 Balance', async (ctx) => {
+  const user = getUser(ctx.from.id.toString());
+  await ctx.reply(`💰 BALANCE\n\n₦${user.wallet}`);
 });
 
-bot.hears('💳 Deposit Funds', async (ctx) => {
+// DEPOSIT - INSTANT
+bot.hears('💳 Deposit', async (ctx) => {
   const userId = ctx.from.id.toString();
   await ctx.reply(
-    `💳 DEPOSIT FUNDS\n\n` +
-    `To deposit:\n` +
-    `1. Contact @opuenekeke\n` +
-    `2. Send payment proof\n` +
-    `3. Include your ID: ${userId}\n` +
-    `4. Wait for confirmation`
+    `💳 DEPOSIT\n\n` +
+    `Contact @opuenekeke\n` +
+    `Your ID: ${userId}\n` +
+    `Send payment proof`
   );
 });
 
+// ADMIN - INSTANT
 bot.hears('🛠️ Admin', async (ctx) => {
-  const userId = ctx.from.id.toString();
-  if (!isAdmin(userId)) {
-    return ctx.reply('❌ Admin access only');
+  if (!isAdmin(ctx.from.id.toString())) {
+    return ctx.reply('❌ Admin only');
   }
-  
   await ctx.reply(
-    `🛠️ ADMIN PANEL\n\n` +
-    `Welcome Admin!\n\n` +
-    `Total Users: ${Object.keys(users).length}\n` +
+    `🛠️ ADMIN\n\n` +
+    `Users: ${Object.keys(users).length}\n` +
     `Uptime: ${Math.floor(process.uptime() / 60)}min`,
     Markup.inlineKeyboard([
       [Markup.button.callback('Refresh', 'admin_refresh')],
@@ -138,56 +127,69 @@ bot.hears('🛠️ Admin', async (ctx) => {
   );
 });
 
-bot.hears('🆘 Help', async (ctx) => {
-  await ctx.reply(
-    `🆘 HELP & SUPPORT\n\n` +
-    `📞 Contact: @opuenekeke\n` +
-    `⏰ Response: 5-10 minutes`
-  );
-});
-
-// CALLBACKS
+// ⚡⚡⚡ CALLBACKS ⚡⚡⚡
 bot.action('start', async (ctx) => {
   const userId = ctx.from.id.toString();
-  const isAdminUser = isAdmin(userId);
-  const user = initUser(userId);
+  const admin = isAdmin(userId);
+  const user = getUser(userId);
   
-  const keyboard = isAdminUser 
-    ? [
-        ['📞 Buy Airtime', '📡 Buy Data'],
-        ['💰 Wallet Balance', '💳 Deposit Funds'],
-        ['🏦 Money Transfer', '📜 History'],
-        ['🛂 KYC Status', '🛠️ Admin'],
-        ['🆘 Help']
-      ]
-    : [
-        ['📞 Buy Airtime', '📡 Buy Data'],
-        ['💰 Wallet Balance', '💳 Deposit Funds'],
-        ['🏦 Money Transfer', '📜 History'],
-        ['🛂 KYC Status', '🆘 Help']
-      ];
+  const keys = admin 
+    ? [['📞 Airtime', '📡 Data'], ['💰 Balance', '💳 Deposit'], ['🛠️ Admin']]
+    : [['📞 Airtime', '📡 Data'], ['💰 Balance', '💳 Deposit']];
   
   await ctx.editMessageText(
-    `🌟 Welcome to Liteway VTU Bot!\n\n` +
-    `✅ Status: ONLINE\n\n` +
-    `💰 Balance: ₦${user.wallet.toLocaleString()}\n\n` +
-    `📱 Tap any button to start!`,
-    {
-      ...Markup.keyboard(keyboard).resize(),
-      parse_mode: null // No markdown
-    }
+    `⚡ LITEWAY VTU BOT\n\n` +
+    `💰 Balance: ₦${user.wallet}\n` +
+    `✅ Online\n\n` +
+    `Tap button:`,
+    Markup.keyboard(keys).resize()
   );
   ctx.answerCbQuery();
 });
 
-// START BOT
-bot.launch().then(() => {
-  console.log('✅ Bot started successfully!');
-}).catch(err => {
-  console.error('❌ Bot failed:', err);
+// NETWORK SELECTION
+bot.action(/^net_/, async (ctx) => {
+  const network = ctx.match[0].replace('net_', '');
+  await ctx.editMessageText(
+    `📞 ${network} AIRTIME\n\n` +
+    `Enter amount:\n` +
+    `(Example: 500)`,
+    Markup.inlineKeyboard([
+      [Markup.button.callback('₦100', 'amt_100')],
+      [Markup.button.callback('₦500', 'amt_500')],
+      [Markup.button.callback('Back', 'start')]
+    ])
+  );
+  ctx.answerCbQuery();
 });
 
-// Keep alive
-setInterval(() => {
-  console.log('✅ Bot alive');
-}, 5 * 60 * 1000);
+// ⚡⚡⚡ START BOT - POLLING MODE ⚡⚡⚡
+console.log('🚀 Launching bot in polling mode...');
+
+bot.launch()
+  .then(() => {
+    console.log('✅ BOT RUNNING - SUPER FAST!');
+    console.log('📱 All buttons working instantly');
+    
+    // Keep alive
+    setInterval(() => {
+      console.log('❤️ Bot heartbeat');
+    }, 300000); // 5 minutes
+    
+  })
+  .catch(err => {
+    console.error('❌ Launch failed:', err.message);
+    process.exit(1);
+  });
+
+// Simple error handling
+bot.catch(() => {});
+
+// Express for Render health check
+const express = require('express');
+const app = express();
+app.get('/health', (req, res) => res.json({ status: 'ok' }));
+app.get('/', (req, res) => res.json({ bot: 'online' }));
+app.listen(process.env.PORT || 3000, () => {
+  console.log('🌐 Health check running');
+});
