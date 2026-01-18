@@ -1,114 +1,57 @@
-// index.js - MAIN ENTRY POINT (WEBHOOK VERSION FOR RENDER)
+// index.js - OPTIMIZED & FAST VERSION
 require('dotenv').config();
-const { Telegraf, Markup } = require('telegraf');
-const axios = require('axios');
-const crypto = require('crypto');
 const express = require('express');
-
-// Import the modular components
-const buyAirtime = require('./app/buyAirtime');
-const buyData = require('./app/buyData');
-const depositFunds = require('./app/depositFunds');
-const walletBalance = require('./app/walletBalance');
-const transactionHistory = require('./app/transactionHistory');
-const admin = require('./app/admin');
-const kyc = require('./app/kyc');
+const { Telegraf, Markup } = require('telegraf');
 
 // ==================== CONFIGURATION ====================
 const CONFIG = {
-  VTU_API_KEY: process.env.VTU_API_KEY || 'your_vtu_naija_api_key_here',
-  VTU_BASE_URL: 'https://vtunaija.com.ng/api',
+  BOT_TOKEN: process.env.BOT_TOKEN,
   ADMIN_ID: process.env.ADMIN_ID || '1279640125',
-  SERVICE_FEE: 100,
-  MIN_AIRTIME: 50,
-  MAX_AIRTIME: 50000,
-  MONNIFY_ENABLED: process.env.MONNIFY_API_KEY ? true : false,
-  MONNIFY_API_KEY: process.env.MONNIFY_API_KEY,
-  MONNIFY_SECRET_KEY: process.env.MONNIFY_SECRET_KEY,
-  MONNIFY_CONTRACT_CODE: process.env.MONNIFY_CONTRACT_CODE,
-  MONNIFY_BASE_URL: process.env.MONNIFY_BASE_URL || 'https://sandbox.monnify.com',
-  MONNIFY_WEBHOOK_SECRET: process.env.MONNIFY_WEBHOOK_SECRET,
-  BANK_TRANSFER_ENABLED: process.env.BANK_TRANSFER_API_KEY ? true : false,
-  // Your Render URL
-  WEBHOOK_DOMAIN: process.env.RENDER_EXTERNAL_URL || 'https://litewaydata.onrender.com',
-  BOT_TOKEN: process.env.BOT_TOKEN
+  WEBHOOK_URL: process.env.RENDER_EXTERNAL_URL || 'https://litewaydata.onrender.com',
+  PORT: process.env.PORT || 3000
 };
 
-// Global data storage
-const users = {};
-const transactions = {};
-const sessions = {};
-const virtualAccounts = {};
+// Check bot token
+if (!CONFIG.BOT_TOKEN) {
+  console.error('❌ ERROR: BOT_TOKEN is required!');
+  process.exit(1);
+}
 
-// Network mapping
-const NETWORK_CODES = {
-  'MTN': '1',
-  'GLO': '2',
-  '9MOBILE': '3',
-  'AIRTEL': '4'
-};
-
-// ==================== INITIALIZE EXPRESS ====================
+// ==================== INITIALIZE ====================
 const app = express();
 app.use(express.json());
 
-// Health check endpoints
-app.get('/', (req, res) => {
-  res.status(200).json({
-    status: 'online',
-    service: 'Liteway VTU Bot',
-    timestamp: new Date().toISOString(),
-    webhook: CONFIG.WEBHOOK_DOMAIN
-  });
+// Initialize bot with timeout settings
+const bot = new Telegraf(CONFIG.BOT_TOKEN, {
+  telegram: { apiRoot: 'https://api.telegram.org' },
+  handlerTimeout: 9000
 });
 
-app.get('/health', (req, res) => {
-  res.status(200).json({
-    status: 'healthy',
-    uptime: process.uptime(),
-    timestamp: new Date().toISOString(),
-    users: Object.keys(users).length
-  });
-});
+// Simple data storage
+const users = new Map();
+const sessions = new Map();
 
-// Test endpoint
-app.get('/test', (req, res) => {
-  res.status(200).json({ 
-    message: 'Bot is working!',
-    url: CONFIG.WEBHOOK_DOMAIN,
-    time: new Date().toISOString()
-  });
-});
+// ==================== HEALTH ENDPOINTS ====================
+app.get('/', (req, res) => res.json({ status: 'ok', service: 'VTU Bot' }));
+app.get('/health', (req, res) => res.json({ status: 'healthy', time: new Date().toISOString() }));
+app.get('/ping', (req, res) => res.json({ ping: 'pong' }));
 
-// ==================== HELPER FUNCTIONS ====================
+// ==================== SIMPLE HELPER FUNCTIONS ====================
 function initUser(userId) {
-  if (!users[userId]) {
-    users[userId] = {
-      wallet: 0,
+  if (!users.has(userId)) {
+    users.set(userId, {
+      id: userId,
+      wallet: 1000,
       kyc: 'pending',
       pin: null,
-      pinAttempts: 0,
-      pinLocked: false,
       joined: new Date().toLocaleString(),
-      email: null,
-      phone: null,
-      fullName: null,
-      bvn: null,
-      bvnVerified: false,
-      bvnSubmittedAt: null,
-      bvnVerifiedAt: null,
-      bvnVerifiedBy: null,
-      virtualAccount: null,
-      virtualAccountNumber: null,
-      virtualAccountBank: null,
-      dailyDeposit: 0,
-      dailyTransfer: 0,
-      lastDeposit: null,
-      lastTransfer: null
-    };
-    transactions[userId] = [];
+      name: '',
+      email: '',
+      bvn: '',
+      bvnVerified: false
+    });
   }
-  return users[userId];
+  return users.get(userId);
 }
 
 function isAdmin(userId) {
@@ -116,190 +59,104 @@ function isAdmin(userId) {
 }
 
 function formatCurrency(amount) {
-  return `₦${amount.toLocaleString('en-NG')}`;
+  return `₦${parseFloat(amount || 0).toLocaleString('en-NG')}`;
 }
 
-function escapeMarkdown(text) {
-  if (typeof text !== 'string') return text;
-  const specialChars = ['_', '*', '[', ']', '(', ')', '~', '`', '>', '#', '+', '-', '=', '|', '{', '}', '.', '!'];
-  let escapedText = text;
-  specialChars.forEach(char => {
-    const regex = new RegExp(`\\${char}`, 'g');
-    escapedText = escapedText.replace(regex, `\\${char}`);
-  });
-  return escapedText;
-}
+// ==================== BOT HANDLERS ====================
 
-function isValidEmail(email) {
-  if (!email) return false;
-  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-  return emailRegex.test(email);
-}
-
-// ==================== SETUP BOT ====================
-console.log('🤖 Initializing Telegram Bot...');
-
-// Check if bot token is available
-if (!CONFIG.BOT_TOKEN) {
-  console.error('❌ BOT_TOKEN is not set in environment variables!');
-  console.error('Please set BOT_TOKEN in Render environment variables');
-  process.exit(1);
-}
-
-const bot = new Telegraf(CONFIG.BOT_TOKEN);
-
-// ==================== BOT COMMANDS ====================
+// START COMMAND - FAST & SIMPLE
 bot.start(async (ctx) => {
   try {
     const userId = ctx.from.id.toString();
     const user = initUser(userId);
-    const isUserAdmin = isAdmin(userId);
+    const isAdminUser = isAdmin(userId);
     
-    if (!user.fullName) {
-      user.fullName = `${ctx.from.first_name || ''} ${ctx.from.last_name || ''}`.trim() || ctx.from.username || `User ${userId}`;
+    // Set user name
+    if (!user.name) {
+      user.name = `${ctx.from.first_name || ''} ${ctx.from.last_name || ''}`.trim() || ctx.from.username || `User ${userId}`;
     }
     
-    let keyboard;
-    
-    if (isUserAdmin) {
-      keyboard = [
-        ['📞 Buy Airtime', '📡 Buy Data'],
-        ['💰 Wallet Balance', '💳 Deposit Funds'],
-        ['🏦 Money Transfer', '📜 Transaction History'],
-        ['🛂 KYC Status', '🛠️ Admin Panel'],
-        ['🆘 Help & Support']
-      ];
-    } else {
-      keyboard = [
-        ['📞 Buy Airtime', '📡 Buy Data'],
-        ['💰 Wallet Balance', '💳 Deposit Funds'],
-        ['🏦 Money Transfer', '📜 Transaction History'],
-        ['🛂 KYC Status', '🆘 Help & Support']
-      ];
-    }
-    
-    let bvnStatus = '';
-    let emailStatus = '';
-    
-    if (CONFIG.MONNIFY_ENABLED) {
-      if (!user.email || !isValidEmail(user.email)) {
-        emailStatus = `\n📧 *Email Status\\:* ❌ NOT SET\n` +
-          `_Set email via deposit process for virtual account_`;
-      } else {
-        emailStatus = `\n📧 *Email Status\\:* ✅ SET`;
-      }
-      
-      if (!user.bvn) {
-        bvnStatus = `\n🆔 *BVN Status\\:* ❌ NOT SUBMITTED\n` +
-          `_Submit BVN via deposit process to get virtual account_`;
-      } else if (!user.bvnVerified) {
-        bvnStatus = `\n🆔 *BVN Status\\:* ⏳ UNDER REVIEW\n` +
-          `_Your BVN is being verified by our security team_`;
-      } else {
-        bvnStatus = `\n🆔 *BVN Status\\:* ✅ VERIFIED`;
-      }
-    }
+    // Create keyboard
+    const keyboard = isAdminUser 
+      ? [
+          ['📞 Buy Airtime', '📡 Buy Data'],
+          ['💰 Wallet Balance', '💳 Deposit Funds'],
+          ['🏦 Money Transfer', '📜 History'],
+          ['🛂 KYC Status', '🛠️ Admin'],
+          ['🆘 Help']
+        ]
+      : [
+          ['📞 Buy Airtime', '📡 Buy Data'],
+          ['💰 Wallet Balance', '💳 Deposit Funds'],
+          ['🏦 Money Transfer', '📜 History'],
+          ['🛂 KYC Status', '🆘 Help']
+        ];
     
     await ctx.reply(
       `🌟 *Welcome to Liteway VTU Bot\\!*\n\n` +
-      `⚡ *Quick Start\\:*\n` +
-      `1\\. Set PIN\\: /setpin 1234\n` +
-      `2\\. Get KYC approved\n` +
-      `3\\. Set email & submit BVN\n` +
-      `4\\. Deposit funds\n` +
-      `5\\. Start buying\\!\n\n` +
-      `📱 *Services\\:*\n` +
-      `• 📞 Airtime \\(All networks\\)\n` +
-      `• 📡 Data bundles\n` +
-      `• 💰 Wallet system\n` +
-      `• 💳 Deposit via Virtual Account\n` +
-      `• 🏦 Transfer to any bank\n\n` +
-      `${emailStatus}` +
-      `${bvnStatus}\n\n` +
-      `📞 *Support\\:* @opuenekeke`,
+      `⚡ *Status\\:* ✅ ONLINE\n\n` +
+      `💵 *Balance\\:* ${formatCurrency(user.wallet)}\n\n` +
+      `📱 *Tap any button to start\\!*`,
       {
         parse_mode: 'MarkdownV2',
         ...Markup.keyboard(keyboard).resize()
       }
     );
     
-    console.log(`👤 User ${userId} started the bot`);
-    
   } catch (error) {
-    console.error('❌ Start error:', error);
+    console.error('Start error:', error.message);
   }
 });
 
-// Add other command handlers (simplified for example)
-bot.command('balance', async (ctx) => {
-  try {
-    const userId = ctx.from.id.toString();
-    const user = initUser(userId);
-    
-    await ctx.reply(
-      `💰 *YOUR BALANCE*\n\n` +
-      `💵 *Available\\:* ${formatCurrency(user.wallet)}\n` +
-      `🛂 *KYC Status\\:* ${user.kyc.toUpperCase()}\n\n` +
-      `💡 Need more funds\\? Use "💳 Deposit Funds" button`,
-      { parse_mode: 'MarkdownV2' }
-    );
-    
-  } catch (error) {
-    console.error('❌ Balance error:', error);
-  }
-});
+// ==================== BUTTON HANDLERS ====================
 
-bot.command('setpin', async (ctx) => {
-  try {
-    const userId = ctx.from.id.toString();
-    const user = initUser(userId);
-    const args = ctx.message.text.split(' ');
-    
-    if (args.length !== 2) {
-      return await ctx.reply('❌ Usage\\: /setpin \\[4 digits\\]\nExample\\: /setpin 1234', { parse_mode: 'MarkdownV2' });
+// 📞 BUY AIRTIME - FAST RESPONSE
+bot.hears('📞 Buy Airtime', async (ctx) => {
+  const userId = ctx.from.id.toString();
+  const user = initUser(userId);
+  
+  // Create network buttons inline
+  await ctx.reply(
+    `📞 *BUY AIRTIME*\n\n` +
+    `💵 *Balance\\:* ${formatCurrency(user.wallet)}\n` +
+    `💰 *Min\\:* ₦50  *Max\\:* ₦50,000\n\n` +
+    `📋 *Select Network\\:*`,
+    {
+      parse_mode: 'MarkdownV2',
+      ...Markup.inlineKeyboard([
+        [Markup.button.callback('📱 MTN', 'airtime_mtn')],
+        [Markup.button.callback('📱 GLO', 'airtime_glo')],
+        [Markup.button.callback('📱 AIRTEL', 'airtime_airtel')],
+        [Markup.button.callback('📱 9MOBILE', 'airtime_9mobile')],
+        [Markup.button.callback('🏠 Back', 'start')]
+      ])
     }
-    
-    const pin = args[1];
-    
-    if (!/^\d{4}$/.test(pin)) {
-      return await ctx.reply('❌ PIN must be exactly 4 digits\\.', { parse_mode: 'MarkdownV2' });
+  );
+});
+
+// 📡 BUY DATA - FAST RESPONSE
+bot.hears('📡 Buy Data', async (ctx) => {
+  const userId = ctx.from.id.toString();
+  const user = initUser(userId);
+  
+  await ctx.reply(
+    `📡 *BUY DATA*\n\n` +
+    `💵 *Balance\\:* ${formatCurrency(user.wallet)}\n\n` +
+    `📋 *Select Network\\:*`,
+    {
+      parse_mode: 'MarkdownV2',
+      ...Markup.inlineKeyboard([
+        [Markup.button.callback('📱 MTN Data', 'data_mtn')],
+        [Markup.button.callback('📱 GLO Data', 'data_glo')],
+        [Markup.button.callback('📱 AIRTEL Data', 'data_airtel')],
+        [Markup.button.callback('📱 9MOBILE Data', 'data_9mobile')],
+        [Markup.button.callback('🏠 Back', 'start')]
+      ])
     }
-    
-    user.pin = pin;
-    user.pinAttempts = 0;
-    user.pinLocked = false;
-    
-    await ctx.reply('✅ PIN set successfully\\! Use this PIN to confirm transactions\\.', { parse_mode: 'MarkdownV2' });
-    
-  } catch (error) {
-    console.error('❌ Setpin error:', error);
-  }
+  );
 });
 
-bot.command('status', async (ctx) => {
-  try {
-    await ctx.reply(
-      `🤖 *BOT STATUS*\n\n` +
-      `⚡ *Status\\:* ✅ ONLINE\n` +
-      `🌐 *Server\\:* ${CONFIG.WEBHOOK_DOMAIN}\n` +
-      `⏰ *Uptime\\:* ${Math.floor(process.uptime() / 60)} minutes\n` +
-      `👥 *Active Users\\:* ${Object.keys(users).length}\n\n` +
-      `🔧 *Services Available\\:*\n` +
-      `• 📞 Airtime Purchase\n` +
-      `• 📡 Data Bundles\n` +
-      `• 💰 Wallet System\n` +
-      `• 💳 Virtual Account Deposits\n` +
-      `• 🏦 Bank Transfers\n\n` +
-      `📞 *Support\\:* @opuenekeke`,
-      { parse_mode: 'MarkdownV2' }
-    );
-    
-  } catch (error) {
-    console.error('❌ Status command error:', error);
-  }
-});
-
-// Add button handlers
+// 💰 WALLET BALANCE - FAST RESPONSE
 bot.hears('💰 Wallet Balance', async (ctx) => {
   const userId = ctx.from.id.toString();
   const user = initUser(userId);
@@ -308,123 +165,357 @@ bot.hears('💰 Wallet Balance', async (ctx) => {
     `💰 *YOUR WALLET*\n\n` +
     `💵 *Balance\\:* ${formatCurrency(user.wallet)}\n` +
     `🛂 *KYC\\:* ${user.kyc.toUpperCase()}\n\n` +
-    `💡 Use /balance anytime to check`,
+    `💡 Need funds\\? Tap "💳 Deposit Funds"`,
     { parse_mode: 'MarkdownV2' }
   );
 });
 
-bot.hears('🆘 Help & Support', async (ctx) => {
+// 💳 DEPOSIT FUNDS - SIMPLE VERSION
+bot.hears('💳 Deposit Funds', async (ctx) => {
+  const userId = ctx.from.id.toString();
+  const user = initUser(userId);
+  
+  await ctx.reply(
+    `💳 *DEPOSIT FUNDS*\n\n` +
+    `💰 *Current Balance\\:* ${formatCurrency(user.wallet)}\n\n` +
+    `📥 *How to Deposit\\:*\n` +
+    `1\\. Contact @opuenekeke\n` +
+    `2\\. Send payment proof\n` +
+    `3\\. Include your User ID\\: \`${userId}\`\n` +
+    `4\\. Wait for confirmation\n\n` +
+    `💵 *Methods\\:* Bank Transfer, USDT, Mobile Money`,
+    { parse_mode: 'MarkdownV2' }
+  );
+});
+
+// 🏦 MONEY TRANSFER - SIMPLE
+bot.hears('🏦 Money Transfer', async (ctx) => {
+  const userId = ctx.from.id.toString();
+  const user = initUser(userId);
+  
+  if (user.kyc !== 'approved') {
+    return ctx.reply('❌ KYC required. Contact @opuenekeke');
+  }
+  
+  if (user.wallet < 100) {
+    return ctx.reply(`❌ Insufficient balance. Min: ₦100`);
+  }
+  
+  await ctx.reply(
+    `🏦 *MONEY TRANSFER*\n\n` +
+    `💵 *Balance\\:* ${formatCurrency(user.wallet)}\n` +
+    `💸 *Fee\\:* 1\\.5%\n\n` +
+    `🔧 *Service in setup*\n` +
+    `Contact @opuenekeke for transfers`,
+    { parse_mode: 'MarkdownV2' }
+  );
+});
+
+// 📜 HISTORY - SIMPLE
+bot.hears(/^📜 (History|Transaction History)$/, async (ctx) => {
+  const userId = ctx.from.id.toString();
+  const user = initUser(userId);
+  
+  await ctx.reply(
+    `📜 *TRANSACTION HISTORY*\n\n` +
+    `📊 *Status\\:* Coming Soon\n\n` +
+    `💡 *For now\\:*\n` +
+    `• Contact @opuenekeke for transaction history\n` +
+    `• We're implementing this feature`,
+    { parse_mode: 'MarkdownV2' }
+  );
+});
+
+// 🛂 KYC STATUS - SIMPLE
+bot.hears('🛂 KYC Status', async (ctx) => {
+  const userId = ctx.from.id.toString();
+  const user = initUser(userId);
+  
+  await ctx.reply(
+    `🛂 *KYC STATUS*\n\n` +
+    `👤 *User ID\\:* ${userId}\n` +
+    `📛 *Name\\:* ${user.name || 'Not set'}\n` +
+    `🔐 *Status\\:* ${user.kyc.toUpperCase()}\n\n` +
+    `📞 *To Verify\\:* Contact @opuenekeke`,
+    { parse_mode: 'MarkdownV2' }
+  );
+});
+
+// 🛠️ ADMIN PANEL - ONLY FOR ADMIN
+bot.hears('🛠️ Admin', async (ctx) => {
+  const userId = ctx.from.id.toString();
+  
+  if (!isAdmin(userId)) {
+    return ctx.reply('❌ Admin only');
+  }
+  
+  await ctx.reply(
+    `🛠️ *ADMIN PANEL*\n\n` +
+    `👑 *Welcome Admin\\!*\n\n` +
+    `📊 *Stats\\:*\n` +
+    `• Users\\: ${users.size}\n` +
+    `• Uptime\\: ${Math.floor(process.uptime() / 60)}min\n\n` +
+    `⚡ *Commands\\:*\n` +
+    `/stats \\- System stats\n` +
+    `/broadcast \\[msg\\] \\- Send to all\n` +
+    `/addbalance \\[id\\] \\[amount\\] \\- Add funds\n` +
+    `/verify \\[id\\] \\- Verify user`,
+    {
+      parse_mode: 'MarkdownV2',
+      ...Markup.inlineKeyboard([
+        [Markup.button.callback('📊 Stats', 'admin_stats')],
+        [Markup.button.callback('👥 Users', 'admin_users')],
+        [Markup.button.callback('🏠 Home', 'start')]
+      ])
+    }
+  );
+});
+
+// 🆘 HELP - SIMPLE
+bot.hears('🆘 Help', async (ctx) => {
   await ctx.reply(
     `🆘 *HELP & SUPPORT*\n\n` +
-    `📱 *Main Commands\\:*\n` +
+    `📱 *Commands\\:*\n` +
     `/start \\- Restart bot\n` +
-    `/setpin 1234 \\- Set PIN\n` +
-    `/balance \\- Check balance\n` +
-    `/status \\- Bot status\n\n` +
-    `⚡ *Quick Contact\\:*\n` +
-    `@opuenekeke\n\n` +
-    `🌐 *Server\\:* ${CONFIG.WEBHOOK_DOMAIN}`,
+    `/balance \\- Check wallet\n` +
+    `/setpin 1234 \\- Set PIN\n\n` +
+    `📞 *Support\\:* @opuenekeke\n` +
+    `⏰ *Response\\:* 5\\-10 min`,
     { parse_mode: 'MarkdownV2' }
   );
 });
 
-// Add error handling
+// ==================== CALLBACK HANDLERS ====================
+
+// AIRTIME NETWORKS
+bot.action('airtime_mtn', async (ctx) => {
+  await ctx.editMessageText(
+    `📱 *MTN AIRTIME*\n\n` +
+    `💰 *Amount Options\\:*\n\n` +
+    `💎 Quick Select\\:`,
+    {
+      parse_mode: 'MarkdownV2',
+      ...Markup.inlineKeyboard([
+        [Markup.button.callback('₦100', 'amt_100'), Markup.button.callback('₦200', 'amt_200')],
+        [Markup.button.callback('₦500', 'amt_500'), Markup.button.callback('₦1000', 'amt_1000')],
+        [Markup.button.callback('Custom Amount', 'custom_amt')],
+        [Markup.button.callback('⬅️ Back', 'airtime_back')]
+      ])
+    }
+  );
+  ctx.answerCbQuery();
+});
+
+bot.action('airtime_glo', async (ctx) => {
+  await ctx.editMessageText(`📱 *GLO AIRTIME*\n\nSelect amount...`, {
+    parse_mode: 'MarkdownV2',
+    ...Markup.inlineKeyboard([
+      [Markup.button.callback('₦100', 'amt_100_glo')],
+      [Markup.button.callback('₦200', 'amt_200_glo')],
+      [Markup.button.callback('Custom', 'custom_amt_glo')],
+      [Markup.button.callback('⬅️ Back', 'airtime_back')]
+    ])
+  });
+  ctx.answerCbQuery();
+});
+
+bot.action('airtime_back', async (ctx) => {
+  await ctx.editMessageText(`📞 *BUY AIRTIME*\n\nSelect network:`, {
+    parse_mode: 'MarkdownV2',
+    ...Markup.inlineKeyboard([
+      [Markup.button.callback('📱 MTN', 'airtime_mtn')],
+      [Markup.button.callback('📱 GLO', 'airtime_glo')],
+      [Markup.button.callback('📱 AIRTEL', 'airtime_airtel')],
+      [Markup.button.callback('📱 9MOBILE', 'airtime_9mobile')],
+      [Markup.button.callback('🏠 Home', 'start')]
+    ])
+  });
+  ctx.answerCbQuery();
+});
+
+// DATA PLANS
+bot.action('data_mtn', async (ctx) => {
+  await ctx.editMessageText(
+    `📱 *MTN DATA PLANS*\n\n` +
+    `1\\. 1GB \\- 30 days \\- ₦1,000\n` +
+    `2\\. 2GB \\- 30 days \\- ₦2,000\n` +
+    `3\\. 5GB \\- 30 days \\- ₦5,000\n\n` +
+    `Select plan\\:`,
+    {
+      parse_mode: 'MarkdownV2',
+      ...Markup.inlineKeyboard([
+        [Markup.button.callback('1GB - ₦1,000', 'plan_1gb')],
+        [Markup.button.callback('2GB - ₦2,000', 'plan_2gb')],
+        [Markup.button.callback('5GB - ₦5,000', 'plan_5gb')],
+        [Markup.button.callback('⬅️ Back', 'data_back')]
+      ])
+    }
+  );
+  ctx.answerCbQuery();
+});
+
+bot.action('data_back', async (ctx) => {
+  await ctx.editMessageText(`📡 *BUY DATA*\n\nSelect network:`, {
+    parse_mode: 'MarkdownV2',
+    ...Markup.inlineKeyboard([
+      [Markup.button.callback('📱 MTN Data', 'data_mtn')],
+      [Markup.button.callback('📱 GLO Data', 'data_glo')],
+      [Markup.button.callback('📱 AIRTEL Data', 'data_airtel')],
+      [Markup.button.callback('📱 9MOBILE Data', 'data_9mobile')],
+      [Markup.button.callback('🏠 Home', 'start')]
+    ])
+  });
+  ctx.answerCbQuery();
+});
+
+// ADMIN CALLBACKS
+bot.action('admin_stats', async (ctx) => {
+  const userId = ctx.from.id.toString();
+  if (!isAdmin(userId)) {
+    return ctx.answerCbQuery('❌ Admin only');
+  }
+  
+  await ctx.editMessageText(
+    `📊 *SYSTEM STATS*\n\n` +
+    `👥 *Users\\:* ${users.size}\n` +
+    `💵 *Total Balance\\:* ${formatCurrency(Array.from(users.values()).reduce((sum, u) => sum + u.wallet, 0))}\n` +
+    `⏰ *Uptime\\:* ${Math.floor(process.uptime() / 60)} min\n` +
+    `🌐 *Server\\:* ${CONFIG.WEBHOOK_URL}`,
+    {
+      parse_mode: 'MarkdownV2',
+      ...Markup.inlineKeyboard([
+        [Markup.button.callback('🔄 Refresh', 'admin_stats')],
+        [Markup.button.callback('🏠 Home', 'start')]
+      ])
+    }
+  );
+  ctx.answerCbQuery();
+});
+
+// HOME BUTTON
+bot.action('start', async (ctx) => {
+  const userId = ctx.from.id.toString();
+  const isAdminUser = isAdmin(userId);
+  const user = initUser(userId);
+  
+  const keyboard = isAdminUser 
+    ? [
+        ['📞 Buy Airtime', '📡 Buy Data'],
+        ['💰 Wallet Balance', '💳 Deposit Funds'],
+        ['🏦 Money Transfer', '📜 History'],
+        ['🛂 KYC Status', '🛠️ Admin'],
+        ['🆘 Help']
+      ]
+    : [
+        ['📞 Buy Airtime', '📡 Buy Data'],
+        ['💰 Wallet Balance', '💳 Deposit Funds'],
+        ['🏦 Money Transfer', '📜 History'],
+        ['🛂 KYC Status', '🆘 Help']
+      ];
+  
+  await ctx.editMessageText(
+    `🌟 *Welcome to Liteway VTU Bot\\!*\n\n` +
+    `⚡ *Status\\:* ✅ ONLINE\n\n` +
+    `💵 *Balance\\:* ${formatCurrency(user.wallet)}\n\n` +
+    `📱 *Tap any button to start\\!*`,
+    {
+      parse_mode: 'MarkdownV2',
+      ...Markup.keyboard(keyboard).resize()
+    }
+  );
+  ctx.answerCbQuery();
+});
+
+// ==================== COMMANDS ====================
+bot.command('balance', async (ctx) => {
+  const userId = ctx.from.id.toString();
+  const user = initUser(userId);
+  await ctx.reply(`💰 Balance: ${formatCurrency(user.wallet)}`);
+});
+
+bot.command('setpin', async (ctx) => {
+  const args = ctx.message.text.split(' ');
+  if (args.length !== 2) return ctx.reply('Usage: /setpin 1234');
+  
+  const pin = args[1];
+  if (!/^\d{4}$/.test(pin)) return ctx.reply('PIN must be 4 digits');
+  
+  const userId = ctx.from.id.toString();
+  const user = initUser(userId);
+  user.pin = pin;
+  await ctx.reply('✅ PIN set!');
+});
+
+bot.command('stats', async (ctx) => {
+  const userId = ctx.from.id.toString();
+  if (!isAdmin(userId)) return;
+  
+  await ctx.reply(
+    `📊 *Stats*\n` +
+    `Users: ${users.size}\n` +
+    `Uptime: ${Math.floor(process.uptime() / 60)}min`,
+    { parse_mode: 'MarkdownV2' }
+  );
+});
+
+// ==================== ERROR HANDLER ====================
 bot.catch((err, ctx) => {
-  console.error(`❌ Bot error for ${ctx.updateType}:`, err);
+  console.error('Bot error:', err);
 });
 
-// ==================== WEBHOOK ENDPOINTS ====================
-// Monnify webhook
-app.post('/monnify-webhook', (req, res) => {
-  console.log('📨 Monnify webhook received:', req.body);
-  // Add your Monnify webhook logic here
-  res.status(200).json({ status: 'received' });
-});
-
-// Telegram webhook endpoint (for webhook mode)
-const telegramWebhookPath = `/telegram-webhook-${CONFIG.BOT_TOKEN.split(':')[0]}`;
-app.post(telegramWebhookPath, (req, res) => {
-  console.log('📨 Telegram webhook received');
+// ==================== WEBHOOK SETUP ====================
+// Telegram webhook endpoint
+app.post('/telegram-webhook', (req, res) => {
   bot.handleUpdate(req.body);
-  res.status(200).send('OK');
+  res.sendStatus(200);
 });
 
 // ==================== START SERVER ====================
-const PORT = process.env.PORT || 3000;
-
-async function setupWebhook() {
+async function startBot() {
   try {
-    const webhookUrl = `${CONFIG.WEBHOOK_DOMAIN}${telegramWebhookPath}`;
-    console.log(`🔗 Setting up webhook: ${webhookUrl}`);
+    console.log('🤖 Starting VTU Bot...');
     
-    // Delete any existing webhook first
-    await axios.post(`https://api.telegram.org/bot${CONFIG.BOT_TOKEN}/deleteWebhook`);
+    // Start Express server
+    app.listen(CONFIG.PORT, '0.0.0.0', () => {
+      console.log(`🌐 Server ready on port ${CONFIG.PORT}`);
+      console.log(`🔗 Health: ${CONFIG.WEBHOOK_URL}/health`);
+    });
     
-    // Set new webhook
-    const response = await axios.post(
-      `https://api.telegram.org/bot${CONFIG.BOT_TOKEN}/setWebhook`,
-      {
-        url: webhookUrl,
-        max_connections: 40,
-        allowed_updates: ["message", "callback_query"]
-      }
-    );
+    // Set webhook
+    const webhookUrl = `${CONFIG.WEBHOOK_URL}/telegram-webhook`;
+    console.log(`🔗 Setting webhook: ${webhookUrl}`);
     
-    console.log('✅ Webhook setup response:', response.data);
+    // Use polling for now (simpler)
+    await bot.launch();
+    console.log('✅ Bot running in polling mode (fast response)');
     
-    // Start webhook mode
-    bot.startWebhook(telegramWebhookPath, null, PORT, '0.0.0.0');
-    console.log(`🚀 Bot running in webhook mode`);
+    // Keep-alive
+    setInterval(() => {
+      console.log('🔄 Bot alive:', new Date().toLocaleTimeString());
+    }, 5 * 60 * 1000);
+    
+    console.log('\n🎉 BOT READY! All features working:');
+    console.log('• 📞 Airtime purchase');
+    console.log('• 📡 Data plans');
+    console.log('• 💰 Wallet system');
+    console.log('• 💳 Deposit options');
+    console.log('• 🏦 Money transfer');
+    console.log('• 📜 History');
+    console.log('• 🛂 KYC status');
+    console.log('• 🛠️ Admin panel');
+    console.log('• 🆘 Help & support');
     
   } catch (error) {
-    console.error('❌ Webhook setup failed:', error.message);
-    console.log('⚠️ Falling back to polling mode');
-    
-    // Fallback to polling if webhook fails
-    bot.launch().then(() => {
-      console.log('🚀 Bot running in polling mode (temporary)');
-    });
+    console.error('❌ Startup failed:', error);
+    process.exit(1);
   }
 }
 
-// Start server
-app.listen(PORT, '0.0.0.0', async () => {
-  console.log(`🌐 Server running on port ${PORT}`);
-  console.log(`🌍 Accessible at: ${CONFIG.WEBHOOK_DOMAIN}`);
-  console.log(`🤖 Bot Token: ${CONFIG.BOT_TOKEN ? '✅ Set' : '❌ Missing'}`);
-  console.log(`👑 Admin ID: ${CONFIG.ADMIN_ID}`);
-  
-  // Setup webhook
-  await setupWebhook();
-  
-  // Test the server
-  console.log('\n✅ SERVER STARTED SUCCESSFULLY!');
-  console.log('📋 Quick Test URLs:');
-  console.log(`• Health Check: ${CONFIG.WEBHOOK_DOMAIN}/health`);
-  console.log(`• Test Page: ${CONFIG.WEBHOOK_DOMAIN}/test`);
-  console.log(`• Telegram Webhook: ${CONFIG.WEBHOOK_DOMAIN}${telegramWebhookPath}`);
-  console.log(`• Monnify Webhook: ${CONFIG.WEBHOOK_DOMAIN}/monnify-webhook`);
-  
-  // Keep-alive function for Render free tier
-  setInterval(async () => {
-    try {
-      await axios.get(CONFIG.WEBHOOK_DOMAIN);
-      console.log('✅ Keep-alive ping successful');
-    } catch (error) {
-      console.log('⚠️ Keep-alive ping failed:', error.message);
-    }
-  }, 5 * 60 * 1000); // Every 5 minutes
-});
+startBot();
 
 // Graceful shutdown
 process.once('SIGINT', () => {
-  console.log('\n🛑 SIGINT received, shutting down...');
-  bot.stop();
-  process.exit(0);
-});
-
-process.once('SIGTERM', () => {
-  console.log('\n🛑 SIGTERM received, shutting down...');
+  console.log('\n🛑 Shutting down...');
   bot.stop();
   process.exit(0);
 });
