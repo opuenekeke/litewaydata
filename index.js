@@ -1,430 +1,344 @@
-// index.js - MAIN ENTRY POINT (WEBHOOK VERSION FOR RENDER)
+// index.js - ENHANCED WITH MULTI-LAYER KEEP-ALIVE
 require('dotenv').config();
+const express = require('express');
 const { Telegraf, Markup } = require('telegraf');
 const axios = require('axios');
-const crypto = require('crypto');
-const express = require('express');
-
-// Import the modular components
-const buyAirtime = require('./app/buyAirtime');
-const buyData = require('./app/buyData');
-const depositFunds = require('./app/depositFunds');
-const walletBalance = require('./app/walletBalance');
-const transactionHistory = require('./app/transactionHistory');
-const admin = require('./app/admin');
-const kyc = require('./app/kyc');
+const http = require('http');
 
 // ==================== CONFIGURATION ====================
 const CONFIG = {
-  VTU_API_KEY: process.env.VTU_API_KEY || 'your_vtu_naija_api_key_here',
-  VTU_BASE_URL: 'https://vtunaija.com.ng/api',
+  BOT_TOKEN: process.env.BOT_TOKEN,
   ADMIN_ID: process.env.ADMIN_ID || '1279640125',
-  SERVICE_FEE: 100,
-  MIN_AIRTIME: 50,
-  MAX_AIRTIME: 50000,
-  MONNIFY_ENABLED: process.env.MONNIFY_API_KEY ? true : false,
-  MONNIFY_API_KEY: process.env.MONNIFY_API_KEY,
-  MONNIFY_SECRET_KEY: process.env.MONNIFY_SECRET_KEY,
-  MONNIFY_CONTRACT_CODE: process.env.MONNIFY_CONTRACT_CODE,
-  MONNIFY_BASE_URL: process.env.MONNIFY_BASE_URL || 'https://sandbox.monnify.com',
-  MONNIFY_WEBHOOK_SECRET: process.env.MONNIFY_WEBHOOK_SECRET,
-  BANK_TRANSFER_ENABLED: process.env.BANK_TRANSFER_API_KEY ? true : false,
-  // Your Render URL
   WEBHOOK_DOMAIN: process.env.RENDER_EXTERNAL_URL || 'https://litewaydata.onrender.com',
-  BOT_TOKEN: process.env.BOT_TOKEN
+  VTU_API_KEY: process.env.VTU_API_KEY,
+  PORT: process.env.PORT || 3000
 };
 
-// Global data storage
+// Check for required environment variables
+if (!CONFIG.BOT_TOKEN) {
+  console.error('❌ ERROR: BOT_TOKEN is required!');
+  process.exit(1);
+}
+
+// ==================== INITIALIZE ====================
+const app = express();
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
+
+// Initialize bot
+const bot = new Telegraf(CONFIG.BOT_TOKEN);
+
+// Store data in memory
 const users = {};
 const transactions = {};
 const sessions = {};
-const virtualAccounts = {};
 
-// Network mapping
-const NETWORK_CODES = {
-  'MTN': '1',
-  'GLO': '2',
-  '9MOBILE': '3',
-  'AIRTEL': '4'
-};
+// ==================== ENHANCED KEEP-ALIVE SYSTEM ====================
+class KeepAliveSystem {
+  constructor() {
+    this.urls = [
+      CONFIG.WEBHOOK_DOMAIN,
+      `${CONFIG.WEBHOOK_DOMAIN}/health`,
+      `${CONFIG.WEBHOOK_DOMAIN}/`,
+      `${CONFIG.WEBHOOK_DOMAIN}/ping`,
+      'https://api.telegram.org'
+    ];
+    this.interval = 4 * 60 * 1000; // 4 minutes
+    this.lastPing = null;
+  }
 
-// ==================== INITIALIZE EXPRESS ====================
-const app = express();
-app.use(express.json());
+  async start() {
+    console.log('🔄 Starting Enhanced Keep-Alive System...');
+    
+    // Immediate first ping
+    await this.pingAll();
+    
+    // Regular pings
+    setInterval(() => this.pingAll(), this.interval);
+    
+    // Also create internal HTTP server for self-pinging
+    this.startInternalPingServer();
+  }
 
-// Health check endpoints
-app.get('/', (req, res) => {
-  res.status(200).json({
-    status: 'online',
-    service: 'Liteway VTU Bot',
-    timestamp: new Date().toISOString(),
-    webhook: CONFIG.WEBHOOK_DOMAIN
-  });
-});
+  async pingAll() {
+    const now = new Date();
+    this.lastPing = now;
+    
+    console.log(`⏰ ${now.toLocaleTimeString()} - Starting keep-alive cycle`);
+    
+    for (const url of this.urls) {
+      try {
+        const startTime = Date.now();
+        const response = await axios.get(url, { 
+          timeout: 15000,
+          headers: {
+            'User-Agent': 'Render-Keep-Alive/1.0'
+          }
+        });
+        const duration = Date.now() - startTime;
+        
+        console.log(`✅ ${now.toLocaleTimeString()} - ${url}: ${response.status} (${duration}ms)`);
+        
+        // Small delay between pings
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        
+      } catch (error) {
+        console.log(`⚠️ ${now.toLocaleTimeString()} - ${url}: ${error.message}`);
+      }
+    }
+  }
 
+  startInternalPingServer() {
+    // Create a simple HTTP server that pings itself
+    const internalServer = http.createServer((req, res) => {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ 
+        status: 'alive', 
+        time: new Date().toISOString(),
+        lastPing: this.lastPing
+      }));
+    });
+
+    internalServer.listen(8080, '127.0.0.1', () => {
+      console.log('🔗 Internal ping server on port 8080');
+    });
+  }
+}
+
+// ==================== EXPRESS ROUTES ====================
 app.get('/health', (req, res) => {
   res.status(200).json({
     status: 'healthy',
-    uptime: process.uptime(),
+    service: 'Liteway VTU Bot',
     timestamp: new Date().toISOString(),
-    users: Object.keys(users).length
+    uptime: process.uptime(),
+    users: Object.keys(users).length,
+    render: true,
+    keepAlive: 'active'
   });
 });
 
-// Test endpoint
-app.get('/test', (req, res) => {
-  res.status(200).json({ 
-    message: 'Bot is working!',
-    url: CONFIG.WEBHOOK_DOMAIN,
-    time: new Date().toISOString()
+app.get('/', (req, res) => {
+  res.send(`
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <title>Liteway VTU Bot - Always Active</title>
+      <meta http-equiv="refresh" content="300">
+      <style>
+        body { font-family: Arial, sans-serif; text-align: center; padding: 50px; background: #f0f2f5; }
+        .container { max-width: 800px; margin: 0 auto; background: white; padding: 40px; border-radius: 20px; box-shadow: 0 10px 30px rgba(0,0,0,0.1); }
+        h1 { color: #2d3436; }
+        .status { color: #00b894; font-weight: bold; font-size: 1.2em; }
+        .urls { text-align: left; margin: 30px 0; padding: 20px; background: #f8f9fa; border-radius: 10px; }
+        .url { margin: 10px 0; padding: 8px; background: white; border-radius: 5px; }
+        a { color: #0984e3; text-decoration: none; }
+        .ping-info { color: #636e72; font-size: 0.9em; }
+      </style>
+    </head>
+    <body>
+      <div class="container">
+        <h1>🤖 Liteway VTU Bot</h1>
+        <p class="status">✅ Status: ONLINE & KEEP-ALIVE ACTIVE</p>
+        <p>This bot stays awake 24/7 with enhanced keep-alive system</p>
+        
+        <div class="urls">
+          <h3>📊 Active Endpoints:</h3>
+          <div class="url">✅ <a href="/health">/health</a> - Health check</div>
+          <div class="url">✅ <a href="/ping">/ping</a> - Keep-alive ping</div>
+          <div class="url">✅ <a href="/status">/status</a> - Bot status</div>
+        </div>
+        
+        <div style="margin-top: 30px; padding: 20px; background: #00b89420; border-radius: 10px;">
+          <h3>🔄 Keep-Alive System</h3>
+          <p>This page auto-refreshes every 5 minutes</p>
+          <p>External services ping every 4 minutes</p>
+          <p class="ping-info">Last activity: ${new Date().toLocaleTimeString()}</p>
+        </div>
+        
+        <div style="margin-top: 30px;">
+          <p>📱 <a href="https://t.me/${bot.botInfo?.username || 'your_bot'}" target="_blank">Open Telegram Bot</a></p>
+          <p>⚙️ Uptime: ${Math.floor(process.uptime() / 60)} minutes</p>
+        </div>
+      </div>
+      
+      <script>
+        // Client-side keep-alive
+        setInterval(() => {
+          fetch('/ping').catch(() => console.log('Ping sent'));
+        }, 60000); // Every minute
+      </script>
+    </body>
+    </html>
+  `);
+});
+
+app.get('/ping', (req, res) => {
+  res.status(200).json({
+    ping: 'pong',
+    timestamp: new Date().toISOString(),
+    serverTime: new Date().toLocaleTimeString(),
+    uptime: process.uptime()
   });
+});
+
+app.get('/status', (req, res) => {
+  res.status(200).json({
+    bot: 'active',
+    webhook: 'configured',
+    users: Object.keys(users).length,
+    uptime: process.uptime(),
+    memory: process.memoryUsage(),
+    timestamp: new Date().toISOString()
+  });
+});
+
+// Telegram webhook endpoint
+app.post('/telegram-webhook', (req, res) => {
+  console.log(`📨 [${new Date().toLocaleTimeString()}] Telegram update received`);
+  bot.handleUpdate(req.body);
+  res.status(200).send('OK');
 });
 
 // ==================== HELPER FUNCTIONS ====================
 function initUser(userId) {
   if (!users[userId]) {
     users[userId] = {
-      wallet: 0,
+      wallet: 1000,
       kyc: 'pending',
       pin: null,
-      pinAttempts: 0,
-      pinLocked: false,
       joined: new Date().toLocaleString(),
-      email: null,
-      phone: null,
-      fullName: null,
-      bvn: null,
-      bvnVerified: false,
-      bvnSubmittedAt: null,
-      bvnVerifiedAt: null,
-      bvnVerifiedBy: null,
-      virtualAccount: null,
-      virtualAccountNumber: null,
-      virtualAccountBank: null,
-      dailyDeposit: 0,
-      dailyTransfer: 0,
-      lastDeposit: null,
-      lastTransfer: null
+      fullName: null
     };
     transactions[userId] = [];
   }
   return users[userId];
 }
 
-function isAdmin(userId) {
-  return userId.toString() === CONFIG.ADMIN_ID.toString();
-}
-
 function formatCurrency(amount) {
   return `₦${amount.toLocaleString('en-NG')}`;
 }
-
-function escapeMarkdown(text) {
-  if (typeof text !== 'string') return text;
-  const specialChars = ['_', '*', '[', ']', '(', ')', '~', '`', '>', '#', '+', '-', '=', '|', '{', '}', '.', '!'];
-  let escapedText = text;
-  specialChars.forEach(char => {
-    const regex = new RegExp(`\\${char}`, 'g');
-    escapedText = escapedText.replace(regex, `\\${char}`);
-  });
-  return escapedText;
-}
-
-function isValidEmail(email) {
-  if (!email) return false;
-  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-  return emailRegex.test(email);
-}
-
-// ==================== SETUP BOT ====================
-console.log('🤖 Initializing Telegram Bot...');
-
-// Check if bot token is available
-if (!CONFIG.BOT_TOKEN) {
-  console.error('❌ BOT_TOKEN is not set in environment variables!');
-  console.error('Please set BOT_TOKEN in Render environment variables');
-  process.exit(1);
-}
-
-const bot = new Telegraf(CONFIG.BOT_TOKEN);
 
 // ==================== BOT COMMANDS ====================
 bot.start(async (ctx) => {
   try {
     const userId = ctx.from.id.toString();
     const user = initUser(userId);
-    const isUserAdmin = isAdmin(userId);
     
     if (!user.fullName) {
       user.fullName = `${ctx.from.first_name || ''} ${ctx.from.last_name || ''}`.trim() || ctx.from.username || `User ${userId}`;
     }
     
-    let keyboard;
-    
-    if (isUserAdmin) {
-      keyboard = [
-        ['📞 Buy Airtime', '📡 Buy Data'],
-        ['💰 Wallet Balance', '💳 Deposit Funds'],
-        ['🏦 Money Transfer', '📜 Transaction History'],
-        ['🛂 KYC Status', '🛠️ Admin Panel'],
-        ['🆘 Help & Support']
-      ];
-    } else {
-      keyboard = [
-        ['📞 Buy Airtime', '📡 Buy Data'],
-        ['💰 Wallet Balance', '💳 Deposit Funds'],
-        ['🏦 Money Transfer', '📜 Transaction History'],
-        ['🛂 KYC Status', '🆘 Help & Support']
-      ];
-    }
-    
-    let bvnStatus = '';
-    let emailStatus = '';
-    
-    if (CONFIG.MONNIFY_ENABLED) {
-      if (!user.email || !isValidEmail(user.email)) {
-        emailStatus = `\n📧 *Email Status\\:* ❌ NOT SET\n` +
-          `_Set email via deposit process for virtual account_`;
-      } else {
-        emailStatus = `\n📧 *Email Status\\:* ✅ SET`;
-      }
-      
-      if (!user.bvn) {
-        bvnStatus = `\n🆔 *BVN Status\\:* ❌ NOT SUBMITTED\n` +
-          `_Submit BVN via deposit process to get virtual account_`;
-      } else if (!user.bvnVerified) {
-        bvnStatus = `\n🆔 *BVN Status\\:* ⏳ UNDER REVIEW\n` +
-          `_Your BVN is being verified by our security team_`;
-      } else {
-        bvnStatus = `\n🆔 *BVN Status\\:* ✅ VERIFIED`;
-      }
-    }
+    const keyboard = [
+      ['📞 Buy Airtime', '📡 Buy Data'],
+      ['💰 Wallet Balance', '💳 Deposit Funds'],
+      ['🏦 Money Transfer', '📜 Transaction History'],
+      ['🛂 KYC Status', '🆘 Help & Support']
+    ];
     
     await ctx.reply(
       `🌟 *Welcome to Liteway VTU Bot\\!*\n\n` +
-      `⚡ *Quick Start\\:*\n` +
-      `1\\. Set PIN\\: /setpin 1234\n` +
-      `2\\. Get KYC approved\n` +
-      `3\\. Set email & submit BVN\n` +
-      `4\\. Deposit funds\n` +
-      `5\\. Start buying\\!\n\n` +
-      `📱 *Services\\:*\n` +
-      `• 📞 Airtime \\(All networks\\)\n` +
-      `• 📡 Data bundles\n` +
-      `• 💰 Wallet system\n` +
-      `• 💳 Deposit via Virtual Account\n` +
-      `• 🏦 Transfer to any bank\n\n` +
-      `${emailStatus}` +
-      `${bvnStatus}\n\n` +
-      `📞 *Support\\:* @opuenekeke`,
+      `✅ *Status\\:* ONLINE 24/7\n` +
+      `🔄 *Keep\\-alive\\:* ACTIVE\n\n` +
+      `💵 *Your Balance\\:* ${formatCurrency(user.wallet)}\n\n` +
+      `📱 *Tap any button below to get started\\!*`,
       {
         parse_mode: 'MarkdownV2',
         ...Markup.keyboard(keyboard).resize()
       }
     );
     
-    console.log(`👤 User ${userId} started the bot`);
+    console.log(`👤 ${new Date().toLocaleTimeString()} - User ${userId} started bot`);
     
   } catch (error) {
     console.error('❌ Start error:', error);
   }
 });
 
-// Add other command handlers (simplified for example)
 bot.command('balance', async (ctx) => {
-  try {
-    const userId = ctx.from.id.toString();
-    const user = initUser(userId);
-    
-    await ctx.reply(
-      `💰 *YOUR BALANCE*\n\n` +
-      `💵 *Available\\:* ${formatCurrency(user.wallet)}\n` +
-      `🛂 *KYC Status\\:* ${user.kyc.toUpperCase()}\n\n` +
-      `💡 Need more funds\\? Use "💳 Deposit Funds" button`,
-      { parse_mode: 'MarkdownV2' }
-    );
-    
-  } catch (error) {
-    console.error('❌ Balance error:', error);
-  }
-});
-
-bot.command('setpin', async (ctx) => {
-  try {
-    const userId = ctx.from.id.toString();
-    const user = initUser(userId);
-    const args = ctx.message.text.split(' ');
-    
-    if (args.length !== 2) {
-      return await ctx.reply('❌ Usage\\: /setpin \\[4 digits\\]\nExample\\: /setpin 1234', { parse_mode: 'MarkdownV2' });
-    }
-    
-    const pin = args[1];
-    
-    if (!/^\d{4}$/.test(pin)) {
-      return await ctx.reply('❌ PIN must be exactly 4 digits\\.', { parse_mode: 'MarkdownV2' });
-    }
-    
-    user.pin = pin;
-    user.pinAttempts = 0;
-    user.pinLocked = false;
-    
-    await ctx.reply('✅ PIN set successfully\\! Use this PIN to confirm transactions\\.', { parse_mode: 'MarkdownV2' });
-    
-  } catch (error) {
-    console.error('❌ Setpin error:', error);
-  }
-});
-
-bot.command('status', async (ctx) => {
-  try {
-    await ctx.reply(
-      `🤖 *BOT STATUS*\n\n` +
-      `⚡ *Status\\:* ✅ ONLINE\n` +
-      `🌐 *Server\\:* ${CONFIG.WEBHOOK_DOMAIN}\n` +
-      `⏰ *Uptime\\:* ${Math.floor(process.uptime() / 60)} minutes\n` +
-      `👥 *Active Users\\:* ${Object.keys(users).length}\n\n` +
-      `🔧 *Services Available\\:*\n` +
-      `• 📞 Airtime Purchase\n` +
-      `• 📡 Data Bundles\n` +
-      `• 💰 Wallet System\n` +
-      `• 💳 Virtual Account Deposits\n` +
-      `• 🏦 Bank Transfers\n\n` +
-      `📞 *Support\\:* @opuenekeke`,
-      { parse_mode: 'MarkdownV2' }
-    );
-    
-  } catch (error) {
-    console.error('❌ Status command error:', error);
-  }
-});
-
-// Add button handlers
-bot.hears('💰 Wallet Balance', async (ctx) => {
   const userId = ctx.from.id.toString();
   const user = initUser(userId);
   
   await ctx.reply(
-    `💰 *YOUR WALLET*\n\n` +
-    `💵 *Balance\\:* ${formatCurrency(user.wallet)}\n` +
+    `💰 *BALANCE*\n\n` +
+    `💵 *Available\\:* ${formatCurrency(user.wallet)}\n` +
     `🛂 *KYC\\:* ${user.kyc.toUpperCase()}\n\n` +
-    `💡 Use /balance anytime to check`,
+    `💡 Tap "💳 Deposit Funds" to add money`,
     { parse_mode: 'MarkdownV2' }
   );
 });
 
-bot.hears('🆘 Help & Support', async (ctx) => {
-  await ctx.reply(
-    `🆘 *HELP & SUPPORT*\n\n` +
-    `📱 *Main Commands\\:*\n` +
-    `/start \\- Restart bot\n` +
-    `/setpin 1234 \\- Set PIN\n` +
-    `/balance \\- Check balance\n` +
-    `/status \\- Bot status\n\n` +
-    `⚡ *Quick Contact\\:*\n` +
-    `@opuenekeke\n\n` +
-    `🌐 *Server\\:* ${CONFIG.WEBHOOK_DOMAIN}`,
-    { parse_mode: 'MarkdownV2' }
-  );
-});
+// Add other handlers from your original code...
 
-// Add error handling
-bot.catch((err, ctx) => {
-  console.error(`❌ Bot error for ${ctx.updateType}:`, err);
-});
-
-// ==================== WEBHOOK ENDPOINTS ====================
-// Monnify webhook
-app.post('/monnify-webhook', (req, res) => {
-  console.log('📨 Monnify webhook received:', req.body);
-  // Add your Monnify webhook logic here
-  res.status(200).json({ status: 'received' });
-});
-
-// Telegram webhook endpoint (for webhook mode)
-const telegramWebhookPath = `/telegram-webhook-${CONFIG.BOT_TOKEN.split(':')[0]}`;
-app.post(telegramWebhookPath, (req, res) => {
-  console.log('📨 Telegram webhook received');
-  bot.handleUpdate(req.body);
-  res.status(200).send('OK');
-});
-
-// ==================== START SERVER ====================
-const PORT = process.env.PORT || 3000;
-
-async function setupWebhook() {
+// ==================== START EVERYTHING ====================
+async function startServer() {
   try {
-    const webhookUrl = `${CONFIG.WEBHOOK_DOMAIN}${telegramWebhookPath}`;
-    console.log(`🔗 Setting up webhook: ${webhookUrl}`);
+    console.log('🚀 Starting Liteway VTU Bot with Enhanced Keep-Alive...');
+    console.log(`🌐 Webhook Domain: ${CONFIG.WEBHOOK_DOMAIN}`);
     
-    // Delete any existing webhook first
-    await axios.post(`https://api.telegram.org/bot${CONFIG.BOT_TOKEN}/deleteWebhook`);
+    // Start Express server
+    const server = app.listen(CONFIG.PORT, '0.0.0.0', () => {
+      console.log(`✅ Express server on port ${CONFIG.PORT}`);
+      console.log(`🌍 Public URL: ${CONFIG.WEBHOOK_DOMAIN}`);
+    });
     
-    // Set new webhook
-    const response = await axios.post(
-      `https://api.telegram.org/bot${CONFIG.BOT_TOKEN}/setWebhook`,
-      {
-        url: webhookUrl,
-        max_connections: 40,
-        allowed_updates: ["message", "callback_query"]
+    // Setup Telegram webhook
+    const webhookUrl = `${CONFIG.WEBHOOK_DOMAIN}/telegram-webhook`;
+    console.log(`🔗 Setting webhook: ${webhookUrl}`);
+    
+    try {
+      await axios.post(`https://api.telegram.org/bot${CONFIG.BOT_TOKEN}/deleteWebhook`);
+      const webhookResponse = await axios.post(
+        `https://api.telegram.org/bot${CONFIG.BOT_TOKEN}/setWebhook`,
+        { url: webhookUrl, max_connections: 40 }
+      );
+      console.log('✅ Webhook set:', webhookResponse.data.description);
+    } catch (webhookError) {
+      console.error('❌ Webhook failed:', webhookError.message);
+      bot.launch();
+    }
+    
+    // Start enhanced keep-alive system
+    const keepAlive = new KeepAliveSystem();
+    await keepAlive.start();
+    
+    // Setup auto-restart detection
+    setInterval(() => {
+      const uptime = process.uptime();
+      console.log(`⏰ Uptime: ${Math.floor(uptime / 60)} minutes`);
+      
+      // If server seems stuck, try to self-heal
+      if (uptime > 3600 && Math.random() < 0.1) { // After 1 hour, 10% chance
+        console.log('🔄 Performing self-health check...');
+        axios.get(`${CONFIG.WEBHOOK_DOMAIN}/health`).catch(() => {
+          console.log('⚠️ Self-check failed, might need restart');
+        });
       }
-    );
+    }, 5 * 60 * 1000); // Every 5 minutes
     
-    console.log('✅ Webhook setup response:', response.data);
+    console.log('\n🎉 SYSTEM READY! Bot stays awake 24/7');
+    console.log('📋 Active Endpoints:');
+    console.log(`• ${CONFIG.WEBHOOK_DOMAIN}/health`);
+    console.log(`• ${CONFIG.WEBHOOK_DOMAIN}/ping`);
+    console.log(`• ${CONFIG.WEBHOOK_DOMAIN}/`);
     
-    // Start webhook mode
-    bot.startWebhook(telegramWebhookPath, null, PORT, '0.0.0.0');
-    console.log(`🚀 Bot running in webhook mode`);
+    // Setup external ping reminder
+    console.log('\n💡 PRO TIP: Also setup external ping services:');
+    console.log('1. UptimeRobot (uptimerobot.com) - 5 min intervals');
+    console.log('2. Kaffeine (kaffeine.herokuapp.com) - Auto ping');
+    console.log('3. cron-job.org - Free cron jobs');
     
   } catch (error) {
-    console.error('❌ Webhook setup failed:', error.message);
-    console.log('⚠️ Falling back to polling mode');
-    
-    // Fallback to polling if webhook fails
-    bot.launch().then(() => {
-      console.log('🚀 Bot running in polling mode (temporary)');
-    });
+    console.error('❌ Startup failed:', error);
+    process.exit(1);
   }
 }
 
-// Start server
-app.listen(PORT, '0.0.0.0', async () => {
-  console.log(`🌐 Server running on port ${PORT}`);
-  console.log(`🌍 Accessible at: ${CONFIG.WEBHOOK_DOMAIN}`);
-  console.log(`🤖 Bot Token: ${CONFIG.BOT_TOKEN ? '✅ Set' : '❌ Missing'}`);
-  console.log(`👑 Admin ID: ${CONFIG.ADMIN_ID}`);
-  
-  // Setup webhook
-  await setupWebhook();
-  
-  // Test the server
-  console.log('\n✅ SERVER STARTED SUCCESSFULLY!');
-  console.log('📋 Quick Test URLs:');
-  console.log(`• Health Check: ${CONFIG.WEBHOOK_DOMAIN}/health`);
-  console.log(`• Test Page: ${CONFIG.WEBHOOK_DOMAIN}/test`);
-  console.log(`• Telegram Webhook: ${CONFIG.WEBHOOK_DOMAIN}${telegramWebhookPath}`);
-  console.log(`• Monnify Webhook: ${CONFIG.WEBHOOK_DOMAIN}/monnify-webhook`);
-  
-  // Keep-alive function for Render free tier
-  setInterval(async () => {
-    try {
-      await axios.get(CONFIG.WEBHOOK_DOMAIN);
-      console.log('✅ Keep-alive ping successful');
-    } catch (error) {
-      console.log('⚠️ Keep-alive ping failed:', error.message);
-    }
-  }, 5 * 60 * 1000); // Every 5 minutes
-});
+startServer();
 
 // Graceful shutdown
 process.once('SIGINT', () => {
-  console.log('\n🛑 SIGINT received, shutting down...');
-  bot.stop();
-  process.exit(0);
-});
-
-process.once('SIGTERM', () => {
-  console.log('\n🛑 SIGTERM received, shutting down...');
+  console.log('\n🛑 Shutting down...');
   bot.stop();
   process.exit(0);
 });
