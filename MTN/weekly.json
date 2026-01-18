@@ -1,0 +1,20 @@
+[
+  {
+    "id": "121",
+    "data": "1GB",
+    "validity": "7 Days",
+    "price": "630"
+  },
+  {
+    "id": "464",
+    "data": "2GB",
+    "validity": "7 Days",
+    "price": "1050"
+  },
+  {
+    "id": "465",
+    "data": "5GB",
+    "validity": "7 Days",
+    "price": "2000"
+  }
+]

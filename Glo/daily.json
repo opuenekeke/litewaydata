@@ -1,0 +1,37 @@
+[
+  {
+    "id": "20",
+    "data": "750MB",
+    "category": "awoof",
+    "validity": "1 Day",
+    "price": "295"
+  },
+  {
+    "id": "126",
+    "data": "1.5GB",
+    "category": "awoof",
+    "validity": "1 Day",
+    "price": "395"
+  },
+  {
+    "id": "127",
+    "data": "2.5GB",
+    "category": "awoof",
+    "validity": "2 Days",
+    "price": "595"
+  },
+  {
+    "id": "21",
+    "data": "1GB",
+    "category": "corporate2",
+    "validity": "3 Days",
+    "price": "385"
+  },
+  {
+    "id": "449",
+    "data": "5GB",
+    "category": "corporate2",
+    "validity": "3 Days",
+    "price": "1500"
+  }
+]

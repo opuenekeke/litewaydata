@@ -1,0 +1,44 @@
+[
+  {
+    "id": "491",
+    "data": "2GB",
+    "validity": "30 Days",
+    "price": "1085"
+  },
+  {
+    "id": "492",
+    "data": "8.4GB",
+    "validity": "30 Days",
+    "price": "4040"
+  },
+  {
+    "id": "493",
+    "data": "4.5GB",
+    "validity": "30 Days",
+    "price": "2070"
+  },
+  {
+    "id": "494",
+    "data": "11.4GB",
+    "validity": "30 Days",
+    "price": "5025"
+  },
+  {
+    "id": "495",
+    "data": "6.2GB",
+    "validity": "30 Days",
+    "price": "3055"
+  },
+  {
+    "id": "496",
+    "data": "2.3GB",
+    "validity": "30 Days",
+    "price": "1282"
+  },
+  {
+    "id": "498",
+    "data": "5.2GB",
+    "validity": "30 Days",
+    "price": "2562.5"
+  }
+]

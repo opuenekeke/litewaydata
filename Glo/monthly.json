@@ -1,0 +1,44 @@
+[
+  {
+    "id": "22",
+    "data": "500MB",
+    "category": "corporate",
+    "validity": "30 Days",
+    "price": "315"
+  },
+  {
+    "id": "23",
+    "data": "1GB",
+    "category": "corporate",
+    "validity": "30 Days",
+    "price": "530"
+  },
+  {
+    "id": "24",
+    "data": "2GB",
+    "category": "corporate",
+    "validity": "30 Days",
+    "price": "960"
+  },
+  {
+    "id": "25",
+    "data": "3GB",
+    "category": "corporate",
+    "validity": "30 Days",
+    "price": "1390"
+  },
+  {
+    "id": "26",
+    "data": "5GB",
+    "category": "corporate",
+    "validity": "30 Days",
+    "price": "2250"
+  },
+  {
+    "id": "27",
+    "data": "10GB",
+    "category": "corporate",
+    "validity": "30 Days",
+    "price": "4400"
+  }
+]

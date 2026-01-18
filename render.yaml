@@ -1,0 +1,33 @@
+services:
+  - type: web
+    name: vtu-bot
+    env: node
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: NODE_VERSION
+        value: 18.17.0
+      - key: BOT_TOKEN
+        sync: false
+      - key: VTU_API_KEY
+        sync: false
+      - key: ADMIN_ID
+        value: "1279640125"
+      - key: MONNIFY_API_KEY
+        sync: false
+      - key: MONNIFY_SECRET_KEY
+        sync: false
+      - key: MONNIFY_CONTRACT_CODE
+        sync: false
+      - key: MONNIFY_BASE_URL
+        value: "https://sandbox.monnify.com"
+      - key: MONNIFY_WEBHOOK_SECRET
+        sync: false
+      - key: BANK_TRANSFER_API_KEY
+        sync: false
+    healthCheckPath: /
+    autoDeploy: true
+    disk:
+      name: vtu-data
+      mountPath: /data
+      sizeGB: 1

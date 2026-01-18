@@ -1,0 +1,32 @@
+[
+  {
+    "id": "304",
+    "data": "500MB",
+    "validity": "30 Days",
+    "price": "470"
+  },
+  {
+    "id": "457",
+    "data": "1GB",
+    "validity": "30 Days",
+    "price": "700"
+  },
+  {
+    "id": "122",
+    "data": "2GB",
+    "validity": "30 Days",
+    "price": "1460"
+  },
+  {
+    "id": "123",
+    "data": "3GB",
+    "validity": "30 Days",
+    "price": "1900"
+  },
+  {
+    "id": "124",
+    "data": "5GB",
+    "validity": "30 Days",
+    "price": "3500"
+  }
+]

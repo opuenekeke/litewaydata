@@ -1,0 +1,65 @@
+[
+  {
+    "id": "31",
+    "data": "100MB",
+    "category": "corporate",
+    "validity": "1 Day",
+    "price": "199"
+  },
+  {
+    "id": "38",
+    "data": "200MB",
+    "category": "corporate",
+    "validity": "2 Days",
+    "price": "298"
+  },
+  {
+    "id": "113",
+    "data": "1GB",
+    "category": "sme",
+    "validity": "1 Day",
+    "price": "465"
+  },
+  {
+    "id": "114",
+    "data": "2GB",
+    "category": "sme",
+    "validity": "2 Days",
+    "price": "775"
+  },
+  {
+    "id": "460",
+    "data": "3.2GB",
+    "category": "sme",
+    "validity": "3 Days",
+    "price": "610"
+  },
+  {
+    "id": "199",
+    "data": "40MB",
+    "category": "gifting",
+    "validity": "1 Day",
+    "price": "149.76"
+  },
+  {
+    "id": "200",
+    "data": "100MB",
+    "category": "gifting",
+    "validity": "1 Day",
+    "price": "200"
+  },
+  {
+    "id": "201",
+    "data": "200MB",
+    "category": "gifting",
+    "validity": "2 Days",
+    "price": "300"
+  },
+  {
+    "id": "202",
+    "data": "300MB",
+    "category": "gifting",
+    "validity": "1 Day",
+    "price": "400"
+  }
+]

@@ -1,0 +1,14 @@
+[
+  {
+    "name": "1GB",
+    "price": 320,
+    "validity": "30 days",
+    "data": "1GB"
+  },
+  {
+    "name": "2GB",
+    "price": 550,
+    "validity": "30 days",
+    "data": "2GB"
+  }
+]
