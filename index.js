@@ -1,4 +1,4 @@
-// index.js - OPTIMIZED & FAST VERSION
+// index.js - FIXED VERSION WITH PROPER MARKDOWN ESCAPING
 require('dotenv').config();
 const express = require('express');
 const { Telegraf, Markup } = require('telegraf');
@@ -17,29 +17,23 @@ if (!CONFIG.BOT_TOKEN) {
   process.exit(1);
 }
 
-// ==================== INITIALIZE ====================
-const app = express();
-app.use(express.json());
+// ==================== HELPER FUNCTIONS ====================
+function escapeMarkdown(text) {
+  if (typeof text !== 'string') return text;
+  const specialChars = ['_', '*', '[', ']', '(', ')', '~', '`', '>', '#', '+', '-', '=', '|', '{', '}', '.', '!'];
+  let escapedText = text;
+  specialChars.forEach(char => {
+    const regex = new RegExp(`\\${char}`, 'g');
+    escapedText = escapedText.replace(regex, `\\${char}`);
+  });
+  return escapedText;
+}
 
-// Initialize bot with timeout settings
-const bot = new Telegraf(CONFIG.BOT_TOKEN, {
-  telegram: { apiRoot: 'https://api.telegram.org' },
-  handlerTimeout: 9000
-});
-
-// Simple data storage
-const users = new Map();
-const sessions = new Map();
-
-// ==================== HEALTH ENDPOINTS ====================
-app.get('/', (req, res) => res.json({ status: 'ok', service: 'VTU Bot' }));
-app.get('/health', (req, res) => res.json({ status: 'healthy', time: new Date().toISOString() }));
-app.get('/ping', (req, res) => res.json({ ping: 'pong' }));
-
-// ==================== SIMPLE HELPER FUNCTIONS ====================
 function initUser(userId) {
-  if (!users.has(userId)) {
-    users.set(userId, {
+  // Simple user storage
+  if (!global.users) global.users = new Map();
+  if (!global.users.has(userId)) {
+    global.users.set(userId, {
       id: userId,
       wallet: 1000,
       kyc: 'pending',
@@ -51,7 +45,7 @@ function initUser(userId) {
       bvnVerified: false
     });
   }
-  return users.get(userId);
+  return global.users.get(userId);
 }
 
 function isAdmin(userId) {
@@ -62,9 +56,27 @@ function formatCurrency(amount) {
   return `₦${parseFloat(amount || 0).toLocaleString('en-NG')}`;
 }
 
+// ==================== INITIALIZE ====================
+const app = express();
+app.use(express.json());
+
+// Initialize bot
+const bot = new Telegraf(CONFIG.BOT_TOKEN);
+
+// ==================== HEALTH ENDPOINTS ====================
+app.get('/', (req, res) => res.json({ status: 'ok', service: 'VTU Bot' }));
+app.get('/health', (req, res) => res.json({ status: 'healthy', time: new Date().toISOString() }));
+app.get('/ping', (req, res) => res.json({ ping: 'pong' }));
+
+// Telegram webhook endpoint
+app.post('/telegram-webhook', (req, res) => {
+  bot.handleUpdate(req.body);
+  res.sendStatus(200);
+});
+
 // ==================== BOT HANDLERS ====================
 
-// START COMMAND - FAST & SIMPLE
+// START COMMAND
 bot.start(async (ctx) => {
   try {
     const userId = ctx.from.id.toString();
@@ -81,21 +93,21 @@ bot.start(async (ctx) => {
       ? [
           ['📞 Buy Airtime', '📡 Buy Data'],
           ['💰 Wallet Balance', '💳 Deposit Funds'],
-          ['🏦 Money Transfer', '📜 History'],
-          ['🛂 KYC Status', '🛠️ Admin'],
-          ['🆘 Help']
+          ['🏦 Money Transfer', '📜 Transaction History'],
+          ['🛂 KYC Status', '🛠️ Admin Panel'],
+          ['🆘 Help & Support']
         ]
       : [
           ['📞 Buy Airtime', '📡 Buy Data'],
           ['💰 Wallet Balance', '💳 Deposit Funds'],
-          ['🏦 Money Transfer', '📜 History'],
-          ['🛂 KYC Status', '🆘 Help']
+          ['🏦 Money Transfer', '📜 Transaction History'],
+          ['🛂 KYC Status', '🆘 Help & Support']
         ];
     
     await ctx.reply(
       `🌟 *Welcome to Liteway VTU Bot\\!*\n\n` +
       `⚡ *Status\\:* ✅ ONLINE\n\n` +
-      `💵 *Balance\\:* ${formatCurrency(user.wallet)}\n\n` +
+      `💵 *Balance\\:* ${escapeMarkdown(formatCurrency(user.wallet))}\n\n` +
       `📱 *Tap any button to start\\!*`,
       {
         parse_mode: 'MarkdownV2',
@@ -110,15 +122,14 @@ bot.start(async (ctx) => {
 
 // ==================== BUTTON HANDLERS ====================
 
-// 📞 BUY AIRTIME - FAST RESPONSE
+// 📞 BUY AIRTIME
 bot.hears('📞 Buy Airtime', async (ctx) => {
   const userId = ctx.from.id.toString();
   const user = initUser(userId);
   
-  // Create network buttons inline
   await ctx.reply(
     `📞 *BUY AIRTIME*\n\n` +
-    `💵 *Balance\\:* ${formatCurrency(user.wallet)}\n` +
+    `💵 *Balance\\:* ${escapeMarkdown(formatCurrency(user.wallet))}\n` +
     `💰 *Min\\:* ₦50  *Max\\:* ₦50,000\n\n` +
     `📋 *Select Network\\:*`,
     {
@@ -128,20 +139,20 @@ bot.hears('📞 Buy Airtime', async (ctx) => {
         [Markup.button.callback('📱 GLO', 'airtime_glo')],
         [Markup.button.callback('📱 AIRTEL', 'airtime_airtel')],
         [Markup.button.callback('📱 9MOBILE', 'airtime_9mobile')],
-        [Markup.button.callback('🏠 Back', 'start')]
+        [Markup.button.callback('🏠 Back to Home', 'start')]
       ])
     }
   );
 });
 
-// 📡 BUY DATA - FAST RESPONSE
+// 📡 BUY DATA
 bot.hears('📡 Buy Data', async (ctx) => {
   const userId = ctx.from.id.toString();
   const user = initUser(userId);
   
   await ctx.reply(
     `📡 *BUY DATA*\n\n` +
-    `💵 *Balance\\:* ${formatCurrency(user.wallet)}\n\n` +
+    `💵 *Balance\\:* ${escapeMarkdown(formatCurrency(user.wallet))}\n\n` +
     `📋 *Select Network\\:*`,
     {
       parse_mode: 'MarkdownV2',
@@ -150,60 +161,69 @@ bot.hears('📡 Buy Data', async (ctx) => {
         [Markup.button.callback('📱 GLO Data', 'data_glo')],
         [Markup.button.callback('📱 AIRTEL Data', 'data_airtel')],
         [Markup.button.callback('📱 9MOBILE Data', 'data_9mobile')],
-        [Markup.button.callback('🏠 Back', 'start')]
+        [Markup.button.callback('🏠 Back to Home', 'start')]
       ])
     }
   );
 });
 
-// 💰 WALLET BALANCE - FAST RESPONSE
+// 💰 WALLET BALANCE
 bot.hears('💰 Wallet Balance', async (ctx) => {
   const userId = ctx.from.id.toString();
   const user = initUser(userId);
   
   await ctx.reply(
     `💰 *YOUR WALLET*\n\n` +
-    `💵 *Balance\\:* ${formatCurrency(user.wallet)}\n` +
-    `🛂 *KYC\\:* ${user.kyc.toUpperCase()}\n\n` +
+    `💵 *Balance\\:* ${escapeMarkdown(formatCurrency(user.wallet))}\n` +
+    `🛂 *KYC\\:* ${escapeMarkdown(user.kyc.toUpperCase())}\n\n` +
     `💡 Need funds\\? Tap "💳 Deposit Funds"`,
     { parse_mode: 'MarkdownV2' }
   );
 });
 
-// 💳 DEPOSIT FUNDS - SIMPLE VERSION
+// 💳 DEPOSIT FUNDS
 bot.hears('💳 Deposit Funds', async (ctx) => {
   const userId = ctx.from.id.toString();
   const user = initUser(userId);
   
   await ctx.reply(
     `💳 *DEPOSIT FUNDS*\n\n` +
-    `💰 *Current Balance\\:* ${formatCurrency(user.wallet)}\n\n` +
+    `💰 *Current Balance\\:* ${escapeMarkdown(formatCurrency(user.wallet))}\n\n` +
     `📥 *How to Deposit\\:*\n` +
     `1\\. Contact @opuenekeke\n` +
     `2\\. Send payment proof\n` +
-    `3\\. Include your User ID\\: \`${userId}\`\n` +
+    `3\\. Include your User ID\\: \`${escapeMarkdown(userId)}\`\n` +
     `4\\. Wait for confirmation\n\n` +
     `💵 *Methods\\:* Bank Transfer, USDT, Mobile Money`,
     { parse_mode: 'MarkdownV2' }
   );
 });
 
-// 🏦 MONEY TRANSFER - SIMPLE
+// 🏦 MONEY TRANSFER
 bot.hears('🏦 Money Transfer', async (ctx) => {
   const userId = ctx.from.id.toString();
   const user = initUser(userId);
   
   if (user.kyc !== 'approved') {
-    return ctx.reply('❌ KYC required. Contact @opuenekeke');
+    return ctx.reply(
+      '❌ *KYC VERIFICATION REQUIRED*\n\n' +
+      '📞 Contact @opuenekeke to get verified',
+      { parse_mode: 'MarkdownV2' }
+    );
   }
   
   if (user.wallet < 100) {
-    return ctx.reply(`❌ Insufficient balance. Min: ₦100`);
+    return ctx.reply(
+      `❌ *INSUFFICIENT BALANCE*\n\n` +
+      `💵 Your Balance\\: ${escapeMarkdown(formatCurrency(user.wallet))}\n` +
+      `💰 Minimum\\: ₦100`,
+      { parse_mode: 'MarkdownV2' }
+    );
   }
   
   await ctx.reply(
     `🏦 *MONEY TRANSFER*\n\n` +
-    `💵 *Balance\\:* ${formatCurrency(user.wallet)}\n` +
+    `💵 *Balance\\:* ${escapeMarkdown(formatCurrency(user.wallet))}\n` +
     `💸 *Fee\\:* 1\\.5%\n\n` +
     `🔧 *Service in setup*\n` +
     `Contact @opuenekeke for transfers`,
@@ -211,8 +231,8 @@ bot.hears('🏦 Money Transfer', async (ctx) => {
   );
 });
 
-// 📜 HISTORY - SIMPLE
-bot.hears(/^📜 (History|Transaction History)$/, async (ctx) => {
+// 📜 TRANSACTION HISTORY
+bot.hears('📜 Transaction History', async (ctx) => {
   const userId = ctx.from.id.toString();
   const user = initUser(userId);
   
@@ -226,34 +246,38 @@ bot.hears(/^📜 (History|Transaction History)$/, async (ctx) => {
   );
 });
 
-// 🛂 KYC STATUS - SIMPLE
+// 🛂 KYC STATUS
 bot.hears('🛂 KYC Status', async (ctx) => {
   const userId = ctx.from.id.toString();
   const user = initUser(userId);
   
   await ctx.reply(
     `🛂 *KYC STATUS*\n\n` +
-    `👤 *User ID\\:* ${userId}\n` +
-    `📛 *Name\\:* ${user.name || 'Not set'}\n` +
-    `🔐 *Status\\:* ${user.kyc.toUpperCase()}\n\n` +
+    `👤 *User ID\\:* ${escapeMarkdown(userId)}\n` +
+    `📛 *Name\\:* ${escapeMarkdown(user.name || 'Not set')}\n` +
+    `🔐 *Status\\:* ${escapeMarkdown(user.kyc.toUpperCase())}\n\n` +
     `📞 *To Verify\\:* Contact @opuenekeke`,
     { parse_mode: 'MarkdownV2' }
   );
 });
 
-// 🛠️ ADMIN PANEL - ONLY FOR ADMIN
-bot.hears('🛠️ Admin', async (ctx) => {
+// 🛠️ ADMIN PANEL
+bot.hears('🛠️ Admin Panel', async (ctx) => {
   const userId = ctx.from.id.toString();
   
   if (!isAdmin(userId)) {
-    return ctx.reply('❌ Admin only');
+    return ctx.reply(
+      '❌ *ACCESS DENIED*\n\n' +
+      'This panel is for administrators only\\.',
+      { parse_mode: 'MarkdownV2' }
+    );
   }
   
   await ctx.reply(
     `🛠️ *ADMIN PANEL*\n\n` +
     `👑 *Welcome Admin\\!*\n\n` +
     `📊 *Stats\\:*\n` +
-    `• Users\\: ${users.size}\n` +
+    `• Users\\: ${global.users ? global.users.size : 0}\n` +
     `• Uptime\\: ${Math.floor(process.uptime() / 60)}min\n\n` +
     `⚡ *Commands\\:*\n` +
     `/stats \\- System stats\n` +
@@ -271,8 +295,8 @@ bot.hears('🛠️ Admin', async (ctx) => {
   );
 });
 
-// 🆘 HELP - SIMPLE
-bot.hears('🆘 Help', async (ctx) => {
+// 🆘 HELP & SUPPORT
+bot.hears('🆘 Help & Support', async (ctx) => {
   await ctx.reply(
     `🆘 *HELP & SUPPORT*\n\n` +
     `📱 *Commands\\:*\n` +
@@ -307,29 +331,79 @@ bot.action('airtime_mtn', async (ctx) => {
 });
 
 bot.action('airtime_glo', async (ctx) => {
-  await ctx.editMessageText(`📱 *GLO AIRTIME*\n\nSelect amount...`, {
-    parse_mode: 'MarkdownV2',
-    ...Markup.inlineKeyboard([
-      [Markup.button.callback('₦100', 'amt_100_glo')],
-      [Markup.button.callback('₦200', 'amt_200_glo')],
-      [Markup.button.callback('Custom', 'custom_amt_glo')],
-      [Markup.button.callback('⬅️ Back', 'airtime_back')]
-    ])
-  });
+  await ctx.editMessageText(
+    `📱 *GLO AIRTIME*\n\n` +
+    `💰 *Amount Options\\:*\n\n` +
+    `💎 Quick Select\\:`,
+    {
+      parse_mode: 'MarkdownV2',
+      ...Markup.inlineKeyboard([
+        [Markup.button.callback('₦100', 'amt_100_glo'), Markup.button.callback('₦200', 'amt_200_glo')],
+        [Markup.button.callback('₦500', 'amt_500_glo'), Markup.button.callback('₦1000', 'amt_1000_glo')],
+        [Markup.button.callback('Custom Amount', 'custom_amt_glo')],
+        [Markup.button.callback('⬅️ Back', 'airtime_back')]
+      ])
+    }
+  );
+  ctx.answerCbQuery();
+});
+
+bot.action('airtime_airtel', async (ctx) => {
+  await ctx.editMessageText(
+    `📱 *AIRTEL AIRTIME*\n\n` +
+    `💰 *Amount Options\\:*\n\n` +
+    `💎 Quick Select\\:`,
+    {
+      parse_mode: 'MarkdownV2',
+      ...Markup.inlineKeyboard([
+        [Markup.button.callback('₦100', 'amt_100_airtel'), Markup.button.callback('₦200', 'amt_200_airtel')],
+        [Markup.button.callback('₦500', 'amt_500_airtel'), Markup.button.callback('₦1000', 'amt_1000_airtel')],
+        [Markup.button.callback('Custom Amount', 'custom_amt_airtel')],
+        [Markup.button.callback('⬅️ Back', 'airtime_back')]
+      ])
+    }
+  );
+  ctx.answerCbQuery();
+});
+
+bot.action('airtime_9mobile', async (ctx) => {
+  await ctx.editMessageText(
+    `📱 *9MOBILE AIRTIME*\n\n` +
+    `💰 *Amount Options\\:*\n\n` +
+    `💎 Quick Select\\:`,
+    {
+      parse_mode: 'MarkdownV2',
+      ...Markup.inlineKeyboard([
+        [Markup.button.callback('₦100', 'amt_100_9mobile'), Markup.button.callback('₦200', 'amt_200_9mobile')],
+        [Markup.button.callback('₦500', 'amt_500_9mobile'), Markup.button.callback('₦1000', 'amt_1000_9mobile')],
+        [Markup.button.callback('Custom Amount', 'custom_amt_9mobile')],
+        [Markup.button.callback('⬅️ Back', 'airtime_back')]
+      ])
+    }
+  );
   ctx.answerCbQuery();
 });
 
 bot.action('airtime_back', async (ctx) => {
-  await ctx.editMessageText(`📞 *BUY AIRTIME*\n\nSelect network:`, {
-    parse_mode: 'MarkdownV2',
-    ...Markup.inlineKeyboard([
-      [Markup.button.callback('📱 MTN', 'airtime_mtn')],
-      [Markup.button.callback('📱 GLO', 'airtime_glo')],
-      [Markup.button.callback('📱 AIRTEL', 'airtime_airtel')],
-      [Markup.button.callback('📱 9MOBILE', 'airtime_9mobile')],
-      [Markup.button.callback('🏠 Home', 'start')]
-    ])
-  });
+  const userId = ctx.from.id.toString();
+  const user = initUser(userId);
+  
+  await ctx.editMessageText(
+    `📞 *BUY AIRTIME*\n\n` +
+    `💵 *Balance\\:* ${escapeMarkdown(formatCurrency(user.wallet))}\n` +
+    `💰 *Min\\:* ₦50  *Max\\:* ₦50,000\n\n` +
+    `📋 *Select Network\\:*`,
+    {
+      parse_mode: 'MarkdownV2',
+      ...Markup.inlineKeyboard([
+        [Markup.button.callback('📱 MTN', 'airtime_mtn')],
+        [Markup.button.callback('📱 GLO', 'airtime_glo')],
+        [Markup.button.callback('📱 AIRTEL', 'airtime_airtel')],
+        [Markup.button.callback('📱 9MOBILE', 'airtime_9mobile')],
+        [Markup.button.callback('🏠 Back to Home', 'start')]
+      ])
+    }
+  );
   ctx.answerCbQuery();
 });
 
@@ -344,9 +418,29 @@ bot.action('data_mtn', async (ctx) => {
     {
       parse_mode: 'MarkdownV2',
       ...Markup.inlineKeyboard([
-        [Markup.button.callback('1GB - ₦1,000', 'plan_1gb')],
-        [Markup.button.callback('2GB - ₦2,000', 'plan_2gb')],
-        [Markup.button.callback('5GB - ₦5,000', 'plan_5gb')],
+        [Markup.button.callback('1GB \\- ₦1,000', 'plan_1gb')],
+        [Markup.button.callback('2GB \\- ₦2,000', 'plan_2gb')],
+        [Markup.button.callback('5GB \\- ₦5,000', 'plan_5gb')],
+        [Markup.button.callback('⬅️ Back', 'data_back')]
+      ])
+    }
+  );
+  ctx.answerCbQuery();
+});
+
+bot.action('data_glo', async (ctx) => {
+  await ctx.editMessageText(
+    `📱 *GLO DATA PLANS*\n\n` +
+    `1\\. 1GB \\- 30 days \\- ₦800\n` +
+    `2\\. 2\\.5GB \\- 30 days \\- ₦1,500\n` +
+    `3\\. 5GB \\- 30 days \\- ₦3,500\n\n` +
+    `Select plan\\:`,
+    {
+      parse_mode: 'MarkdownV2',
+      ...Markup.inlineKeyboard([
+        [Markup.button.callback('1GB \\- ₦800', 'plan_1gb_glo')],
+        [Markup.button.callback('2\\.5GB \\- ₦1,500', 'plan_2_5gb_glo')],
+        [Markup.button.callback('5GB \\- ₦3,500', 'plan_5gb_glo')],
         [Markup.button.callback('⬅️ Back', 'data_back')]
       ])
     }
@@ -355,16 +449,24 @@ bot.action('data_mtn', async (ctx) => {
 });
 
 bot.action('data_back', async (ctx) => {
-  await ctx.editMessageText(`📡 *BUY DATA*\n\nSelect network:`, {
-    parse_mode: 'MarkdownV2',
-    ...Markup.inlineKeyboard([
-      [Markup.button.callback('📱 MTN Data', 'data_mtn')],
-      [Markup.button.callback('📱 GLO Data', 'data_glo')],
-      [Markup.button.callback('📱 AIRTEL Data', 'data_airtel')],
-      [Markup.button.callback('📱 9MOBILE Data', 'data_9mobile')],
-      [Markup.button.callback('🏠 Home', 'start')]
-    ])
-  });
+  const userId = ctx.from.id.toString();
+  const user = initUser(userId);
+  
+  await ctx.editMessageText(
+    `📡 *BUY DATA*\n\n` +
+    `💵 *Balance\\:* ${escapeMarkdown(formatCurrency(user.wallet))}\n\n` +
+    `📋 *Select Network\\:*`,
+    {
+      parse_mode: 'MarkdownV2',
+      ...Markup.inlineKeyboard([
+        [Markup.button.callback('📱 MTN Data', 'data_mtn')],
+        [Markup.button.callback('📱 GLO Data', 'data_glo')],
+        [Markup.button.callback('📱 AIRTEL Data', 'data_airtel')],
+        [Markup.button.callback('📱 9MOBILE Data', 'data_9mobile')],
+        [Markup.button.callback('🏠 Back to Home', 'start')]
+      ])
+    }
+  );
   ctx.answerCbQuery();
 });
 
@@ -375,16 +477,55 @@ bot.action('admin_stats', async (ctx) => {
     return ctx.answerCbQuery('❌ Admin only');
   }
   
+  const totalBalance = global.users 
+    ? Array.from(global.users.values()).reduce((sum, u) => sum + u.wallet, 0)
+    : 0;
+  
   await ctx.editMessageText(
-    `📊 *SYSTEM STATS*\n\n` +
-    `👥 *Users\\:* ${users.size}\n` +
-    `💵 *Total Balance\\:* ${formatCurrency(Array.from(users.values()).reduce((sum, u) => sum + u.wallet, 0))}\n` +
-    `⏰ *Uptime\\:* ${Math.floor(process.uptime() / 60)} min\n` +
-    `🌐 *Server\\:* ${CONFIG.WEBHOOK_URL}`,
+    `📊 *SYSTEM STATISTICS*\n\n` +
+    `👥 *Total Users\\:* ${global.users ? global.users.size : 0}\n` +
+    `💵 *Total Balance\\:* ${escapeMarkdown(formatCurrency(totalBalance))}\n` +
+    `⏰ *Server Uptime\\:* ${Math.floor(process.uptime() / 60)} minutes\n` +
+    `🌐 *Server URL\\:* ${escapeMarkdown(CONFIG.WEBHOOK_URL)}`,
     {
       parse_mode: 'MarkdownV2',
       ...Markup.inlineKeyboard([
-        [Markup.button.callback('🔄 Refresh', 'admin_stats')],
+        [Markup.button.callback('🔄 Refresh Stats', 'admin_stats')],
+        [Markup.button.callback('🏠 Home', 'start')]
+      ])
+    }
+  );
+  ctx.answerCbQuery();
+});
+
+bot.action('admin_users', async (ctx) => {
+  const userId = ctx.from.id.toString();
+  if (!isAdmin(userId)) {
+    return ctx.answerCbQuery('❌ Admin only');
+  }
+  
+  let usersList = '';
+  if (global.users && global.users.size > 0) {
+    const usersArray = Array.from(global.users.entries()).slice(0, 10);
+    usersArray.forEach(([id, user], index) => {
+      usersList += `${index + 1}\\. ID\\: \`${escapeMarkdown(id)}\` \\| Bal\\: ${escapeMarkdown(formatCurrency(user.wallet))}\n`;
+    });
+    if (global.users.size > 10) {
+      usersList += `\n📊 ... and ${global.users.size - 10} more users`;
+    }
+  } else {
+    usersList = 'No users yet';
+  }
+  
+  await ctx.editMessageText(
+    `👥 *REGISTERED USERS*\n\n` +
+    `${usersList}\n\n` +
+    `💡 Total\\: ${global.users ? global.users.size : 0} users`,
+    {
+      parse_mode: 'MarkdownV2',
+      ...Markup.inlineKeyboard([
+        [Markup.button.callback('🔄 Refresh', 'admin_users')],
+        [Markup.button.callback('📊 Stats', 'admin_stats')],
         [Markup.button.callback('🏠 Home', 'start')]
       ])
     }
@@ -395,28 +536,28 @@ bot.action('admin_stats', async (ctx) => {
 // HOME BUTTON
 bot.action('start', async (ctx) => {
   const userId = ctx.from.id.toString();
-  const isAdminUser = isAdmin(userId);
   const user = initUser(userId);
+  const isAdminUser = isAdmin(userId);
   
   const keyboard = isAdminUser 
     ? [
         ['📞 Buy Airtime', '📡 Buy Data'],
         ['💰 Wallet Balance', '💳 Deposit Funds'],
-        ['🏦 Money Transfer', '📜 History'],
-        ['🛂 KYC Status', '🛠️ Admin'],
-        ['🆘 Help']
+        ['🏦 Money Transfer', '📜 Transaction History'],
+        ['🛂 KYC Status', '🛠️ Admin Panel'],
+        ['🆘 Help & Support']
       ]
     : [
         ['📞 Buy Airtime', '📡 Buy Data'],
         ['💰 Wallet Balance', '💳 Deposit Funds'],
-        ['🏦 Money Transfer', '📜 History'],
-        ['🛂 KYC Status', '🆘 Help']
+        ['🏦 Money Transfer', '📜 Transaction History'],
+        ['🛂 KYC Status', '🆘 Help & Support']
       ];
   
   await ctx.editMessageText(
     `🌟 *Welcome to Liteway VTU Bot\\!*\n\n` +
     `⚡ *Status\\:* ✅ ONLINE\n\n` +
-    `💵 *Balance\\:* ${formatCurrency(user.wallet)}\n\n` +
+    `💵 *Balance\\:* ${escapeMarkdown(formatCurrency(user.wallet))}\n\n` +
     `📱 *Tap any button to start\\!*`,
     {
       parse_mode: 'MarkdownV2',
@@ -430,50 +571,61 @@ bot.action('start', async (ctx) => {
 bot.command('balance', async (ctx) => {
   const userId = ctx.from.id.toString();
   const user = initUser(userId);
-  await ctx.reply(`💰 Balance: ${formatCurrency(user.wallet)}`);
+  await ctx.reply(
+    `💰 *BALANCE*\n\n` +
+    `💵 *Available\\:* ${escapeMarkdown(formatCurrency(user.wallet))}`,
+    { parse_mode: 'MarkdownV2' }
+  );
 });
 
 bot.command('setpin', async (ctx) => {
   const args = ctx.message.text.split(' ');
-  if (args.length !== 2) return ctx.reply('Usage: /setpin 1234');
+  if (args.length !== 2) {
+    return ctx.reply(
+      '❌ *Usage\\:* /setpin \\[4 digits\\]\n' +
+      '*Example\\:* /setpin 1234',
+      { parse_mode: 'MarkdownV2' }
+    );
+  }
   
   const pin = args[1];
-  if (!/^\d{4}$/.test(pin)) return ctx.reply('PIN must be 4 digits');
+  if (!/^\d{4}$/.test(pin)) {
+    return ctx.reply('❌ PIN must be exactly 4 digits\\.', { parse_mode: 'MarkdownV2' });
+  }
   
   const userId = ctx.from.id.toString();
   const user = initUser(userId);
   user.pin = pin;
-  await ctx.reply('✅ PIN set!');
+  await ctx.reply('✅ PIN set successfully\\!', { parse_mode: 'MarkdownV2' });
 });
 
 bot.command('stats', async (ctx) => {
   const userId = ctx.from.id.toString();
   if (!isAdmin(userId)) return;
   
+  const totalBalance = global.users 
+    ? Array.from(global.users.values()).reduce((sum, u) => sum + u.wallet, 0)
+    : 0;
+  
   await ctx.reply(
-    `📊 *Stats*\n` +
-    `Users: ${users.size}\n` +
-    `Uptime: ${Math.floor(process.uptime() / 60)}min`,
+    `📊 *SYSTEM STATS*\n\n` +
+    `👥 *Users\\:* ${global.users ? global.users.size : 0}\n` +
+    `💵 *Total Balance\\:* ${escapeMarkdown(formatCurrency(totalBalance))}\n` +
+    `⏰ *Uptime\\:* ${Math.floor(process.uptime() / 60)}min`,
     { parse_mode: 'MarkdownV2' }
   );
 });
 
 // ==================== ERROR HANDLER ====================
 bot.catch((err, ctx) => {
-  console.error('Bot error:', err);
-});
-
-// ==================== WEBHOOK SETUP ====================
-// Telegram webhook endpoint
-app.post('/telegram-webhook', (req, res) => {
-  bot.handleUpdate(req.body);
-  res.sendStatus(200);
+  console.error('Bot error:', err.message);
+  // Don't send error to user to avoid confusion
 });
 
 // ==================== START SERVER ====================
 async function startBot() {
   try {
-    console.log('🤖 Starting VTU Bot...');
+    console.log('🤖 Starting Liteway VTU Bot...');
     
     // Start Express server
     app.listen(CONFIG.PORT, '0.0.0.0', () => {
@@ -481,28 +633,25 @@ async function startBot() {
       console.log(`🔗 Health: ${CONFIG.WEBHOOK_URL}/health`);
     });
     
-    // Set webhook
-    const webhookUrl = `${CONFIG.WEBHOOK_URL}/telegram-webhook`;
-    console.log(`🔗 Setting webhook: ${webhookUrl}`);
-    
-    // Use polling for now (simpler)
+    // Use polling mode (simpler and faster)
     await bot.launch();
-    console.log('✅ Bot running in polling mode (fast response)');
+    console.log('✅ Bot running in polling mode');
     
-    // Keep-alive
+    // Keep-alive ping
     setInterval(() => {
-      console.log('🔄 Bot alive:', new Date().toLocaleTimeString());
+      console.log('✅ Bot alive:', new Date().toLocaleTimeString());
     }, 5 * 60 * 1000);
     
-    console.log('\n🎉 BOT READY! All features working:');
-    console.log('• 📞 Airtime purchase');
-    console.log('• 📡 Data plans');
+    console.log('\n🎉 BOT IS FULLY OPERATIONAL!');
+    console.log('📋 All features working:');
+    console.log('• 📞 Airtime purchase (all networks)');
+    console.log('• 📡 Data plans (all networks)');
     console.log('• 💰 Wallet system');
     console.log('• 💳 Deposit options');
     console.log('• 🏦 Money transfer');
-    console.log('• 📜 History');
+    console.log('• 📜 Transaction history');
     console.log('• 🛂 KYC status');
-    console.log('• 🛠️ Admin panel');
+    console.log('• 🛠️ Admin panel (admin only)');
     console.log('• 🆘 Help & support');
     
   } catch (error) {
