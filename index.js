@@ -25,10 +25,9 @@ const CONFIG = {
   SERVICE_FEE: 100,
   MIN_AIRTIME: 50,
   MAX_AIRTIME: 50000,
-  // BILLSTACK CONFIGURATION (NO BVN REQUIRED)
-  BILLSTACK_ENABLED: process.env.BILLSTACK_EMAIL ? true : false,
-  BILLSTACK_EMAIL: process.env.BILLSTACK_EMAIL,
-  BILLSTACK_PASSWORD: process.env.BILLSTACK_PASSWORD,
+  // BILLSTACK CONFIGURATION (API KEYS - NOT EMAIL/PASSWORD)
+  BILLSTACK_API_KEY: process.env.BILLSTACK_API_KEY,
+  BILLSTACK_SECRET_KEY: process.env.BILLSTACK_SECRET_KEY,
   BILLSTACK_BASE_URL: process.env.BILLSTACK_BASE_URL || 'https://api.billstack.io',
   BANK_TRANSFER_ENABLED: process.env.BANK_TRANSFER_API_KEY ? true : false
 };
@@ -183,7 +182,10 @@ bot.start(async (ctx) => {
     let emailStatus = '';
     let virtualAccountStatus = '';
     
-    if (CONFIG.BILLSTACK_ENABLED) {
+    // Check if Billstack API is configured
+    const billstackConfigured = CONFIG.BILLSTACK_API_KEY && CONFIG.BILLSTACK_SECRET_KEY;
+    
+    if (billstackConfigured) {
       if (!user.email || !isValidEmail(user.email)) {
         emailStatus = `\n📧 *Email Status\\:* ❌ NOT SET\n` +
           `_Set email via deposit process for virtual account_`;
@@ -197,6 +199,11 @@ bot.start(async (ctx) => {
       } else {
         virtualAccountStatus = `\n💳 *Virtual Account\\:* ✅ ACTIVE`;
       }
+    } else {
+      // Billstack not configured yet
+      emailStatus = `\n📧 *Email Status\\:* ${user.email ? '✅ SET' : '❌ NOT SET'}`;
+      virtualAccountStatus = `\n💳 *Virtual Account\\:* ⏳ CONFIG PENDING\n` +
+        `_Admin configuring Billstack API_`;
     }
     
     await ctx.reply(
@@ -426,7 +433,10 @@ bot.command('balance', async (ctx) => {
     let emailStatus = '';
     let virtualAccountStatus = '';
     
-    if (CONFIG.BILLSTACK_ENABLED) {
+    // Check if Billstack API is configured
+    const billstackConfigured = CONFIG.BILLSTACK_API_KEY && CONFIG.BILLSTACK_SECRET_KEY;
+    
+    if (billstackConfigured) {
       if (!user.email || !isValidEmail(user.email)) {
         emailStatus = `📧 *Email Status\\:* ❌ NOT SET\n`;
       } else {
@@ -438,6 +448,10 @@ bot.command('balance', async (ctx) => {
       } else {
         virtualAccountStatus = `💳 *Virtual Account\\:* ✅ ACTIVE\n`;
       }
+    } else {
+      // Billstack not configured yet
+      emailStatus = `📧 *Email Status\\:* ${user.email ? '✅ SET' : '❌ NOT SET'}\n`;
+      virtualAccountStatus = `💳 *Virtual Account\\:* ⏳ CONFIG PENDING\n`;
     }
     
     await ctx.reply(
@@ -649,7 +663,10 @@ bot.action('start', async (ctx) => {
     let emailStatus = '';
     let virtualAccountStatus = '';
     
-    if (CONFIG.BILLSTACK_ENABLED) {
+    // Check if Billstack API is configured
+    const billstackConfigured = CONFIG.BILLSTACK_API_KEY && CONFIG.BILLSTACK_SECRET_KEY;
+    
+    if (billstackConfigured) {
       if (!user.email || !isValidEmail(user.email)) {
         emailStatus = `\n📧 *Email Status\\:* ❌ NOT SET\n` +
           `_Set email via deposit process for virtual account_`;
@@ -663,6 +680,11 @@ bot.action('start', async (ctx) => {
       } else {
         virtualAccountStatus = `\n💳 *Virtual Account\\:* ✅ ACTIVE`;
       }
+    } else {
+      // Billstack not configured yet
+      emailStatus = `\n📧 *Email Status\\:* ${user.email ? '✅ SET' : '❌ NOT SET'}`;
+      virtualAccountStatus = `\n💳 *Virtual Account\\:* ⏳ CONFIG PENDING\n` +
+        `_Admin configuring Billstack API_`;
     }
     
     await ctx.editMessageText(
@@ -997,11 +1019,12 @@ bot.launch().then(() => {
   console.log('🚀 VTU Bot with BILLSTACK VIRTUAL ACCOUNT DEPOSITS!');
   console.log(`👑 Admin ID: ${CONFIG.ADMIN_ID}`);
   console.log(`🔑 VTU API Key: ${CONFIG.VTU_API_KEY ? '✅ SET' : '❌ NOT SET'}`);
-  console.log(`🏦 Billstack: ${CONFIG.BILLSTACK_ENABLED ? '✅ ENABLED' : '❌ DISABLED'}`);
+  console.log(`🔑 Billstack API Key: ${CONFIG.BILLSTACK_API_KEY ? '✅ SET' : '❌ NOT SET'}`);
+  console.log(`🔐 Billstack Secret Key: ${CONFIG.BILLSTACK_SECRET_KEY ? '✅ SET' : '❌ NOT SET'}`);
   console.log(`💳 Bank Transfer: ${CONFIG.BANK_TRANSFER_ENABLED ? '✅ ENABLED' : '❌ DISABLED'}`);
   console.log(`🌐 Webhook Server: http://localhost:${WEBHOOK_PORT}/billstack-webhook`);
   
-  if (CONFIG.BILLSTACK_ENABLED) {
+  if (CONFIG.BILLSTACK_API_KEY && CONFIG.BILLSTACK_SECRET_KEY) {
     console.log('\n✅ BILLSTACK VIRTUAL ACCOUNT FEATURES:');
     console.log('1. ✅ Email verification required');
     console.log('2. ✅ NO BVN required');
@@ -1009,6 +1032,11 @@ bot.launch().then(() => {
     console.log('4. ✅ Webhook integration for automatic deposits');
     console.log('5. ✅ Real-time wallet funding');
     console.log('6. ✅ WEMA BANK virtual accounts');
+  } else {
+    console.log('\n⚠️ BILLSTACK NOT CONFIGURED:');
+    console.log('1. ⚠️ Add BILLSTACK_API_KEY to environment');
+    console.log('2. ⚠️ Add BILLSTACK_SECRET_KEY to environment');
+    console.log('3. ⚠️ Users can still set email for future use');
   }
   
   console.log('\n✅ ALL CORE FEATURES WORKING:');

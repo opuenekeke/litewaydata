@@ -26,34 +26,38 @@ function isValidEmail(email) {
   return emailRegex.test(email);
 }
 
-// Billstack.io API Functions
+// Billstack.io API Functions - CORRECTED TO USE API KEYS
 async function generateBillstackAccessToken(CONFIG) {
   try {
-    // Check if Billstack is enabled and has credentials
-    if (!CONFIG.BILLSTACK_EMAIL || !CONFIG.BILLSTACK_PASSWORD) {
-      throw new Error('Billstack credentials not configured');
+    // Check if Billstack API credentials are configured
+    if (!CONFIG.BILLSTACK_API_KEY || !CONFIG.BILLSTACK_SECRET_KEY) {
+      throw new Error('Billstack API credentials not configured');
     }
     
+    // Billstack uses API key + Secret key for authentication
+    const authString = Buffer.from(`${CONFIG.BILLSTACK_API_KEY}:${CONFIG.BILLSTACK_SECRET_KEY}`).toString('base64');
+    
     const response = await axios.post(
-      `${CONFIG.BILLSTACK_BASE_URL || 'https://api.billstack.io'}/v1/auth/login`,
-      {
-        email: CONFIG.BILLSTACK_EMAIL,
-        password: CONFIG.BILLSTACK_PASSWORD
-      },
+      `${CONFIG.BILLSTACK_BASE_URL || 'https://api.billstack.io'}/v1/auth/token`,
+      {},
       {
         headers: {
+          'Authorization': `Basic ${authString}`,
           'Content-Type': 'application/json'
         },
         timeout: 10000
       }
     );
     
-    if (response.data.success && response.data.data?.token) {
-      return response.data.data.token;
+    if (response.data.success && response.data.data?.access_token) {
+      return response.data.data.access_token;
     }
     throw new Error('Failed to get Billstack access token');
   } catch (error) {
     console.error('❌ Billstack auth error:', error.message);
+    if (error.response?.data) {
+      console.error('❌ API Response:', error.response.data);
+    }
     throw error;
   }
 }
@@ -62,9 +66,9 @@ async function createVirtualAccountForUser(userId, user, virtualAccounts, CONFIG
   try {
     console.log(`🔄 Creating Billstack virtual account for user ${userId}`);
     
-    // Check if Billstack is properly configured
-    if (!CONFIG.BILLSTACK_EMAIL || !CONFIG.BILLSTACK_PASSWORD) {
-      throw new Error('Billstack not configured. Please contact admin.');
+    // Check if Billstack API credentials are configured
+    if (!CONFIG.BILLSTACK_API_KEY || !CONFIG.BILLSTACK_SECRET_KEY) {
+      throw new Error('Billstack API credentials not configured. Please contact admin.');
     }
     
     // Check if user has valid email
@@ -88,7 +92,7 @@ async function createVirtualAccountForUser(userId, user, virtualAccounts, CONFIG
     const payload = {
       customer_name: accountName,
       customer_email: user.email,
-      customer_phone: user.phone || `+234${userId.substring(0, 10)}`, // Use user ID as phone if not provided
+      customer_phone: user.phone || `+234${userId.substring(0, 10)}`,
       account_reference: accountReference,
       bvn: user.bvn || '', // Optional, not required
       nin: user.nin || '', // Optional
@@ -156,8 +160,8 @@ async function createVirtualAccountForUser(userId, user, virtualAccounts, CONFIG
 
 async function getVirtualAccountDetails(userId, user, virtualAccounts, CONFIG) {
   try {
-    // Check if Billstack is properly configured
-    if (!CONFIG.BILLSTACK_EMAIL || !CONFIG.BILLSTACK_PASSWORD) {
+    // Check if Billstack API credentials are configured
+    if (!CONFIG.BILLSTACK_API_KEY || !CONFIG.BILLSTACK_SECRET_KEY) {
       return null;
     }
     
@@ -241,9 +245,9 @@ async function handleEmailUpdate(ctx, users, userId, user, CONFIG, sessions) {
   }
 }
 
-// Main exports - FIXED: Handle missing Billstack configuration properly
+// Main exports - FIXED: Use correct Billstack API key configuration
 module.exports = {
-  // Handle deposit command - FIXED: Check for Billstack configuration properly
+  // Handle deposit command - FIXED: Check for Billstack API keys
   handleDeposit: async (ctx, users, virtualAccounts, CONFIG, sessions) => {
     try {
       const userId = ctx.from.id.toString();
@@ -261,7 +265,7 @@ module.exports = {
       // Initialize user if not exists
       users[userId] = user;
       
-      // FIX: Check if user has email from previous sessions
+      // Check if user has email from previous sessions
       if (!user.email && users[userId] && users[userId].email) {
         user.email = users[userId].email;
         console.log(`📧 Restored email for user ${userId}: ${user.email}`);
@@ -272,30 +276,30 @@ module.exports = {
         userEmail: user.email,
         kycStatus: user.kyc,
         hasVirtualAccount: !!user.virtualAccount,
-        billstackConfigured: !!(CONFIG.BILLSTACK_EMAIL && CONFIG.BILLSTACK_PASSWORD),
-        BILLSTACK_EMAIL: CONFIG.BILLSTACK_EMAIL ? 'SET' : 'NOT SET',
-        BILLSTACK_PASSWORD: CONFIG.BILLSTACK_PASSWORD ? 'SET' : 'NOT SET'
+        BILLSTACK_API_KEY: CONFIG.BILLSTACK_API_KEY ? 'SET' : 'NOT SET',
+        BILLSTACK_SECRET_KEY: CONFIG.BILLSTACK_SECRET_KEY ? 'SET' : 'NOT SET'
       });
       
-      // Check if Billstack is configured - FIXED: Show helpful message
-      if (!CONFIG.BILLSTACK_EMAIL || !CONFIG.BILLSTACK_PASSWORD) {
-        console.log('⚠️ Billstack not configured in environment variables');
+      // Check if Billstack API credentials are configured
+      if (!CONFIG.BILLSTACK_API_KEY || !CONFIG.BILLSTACK_SECRET_KEY) {
+        console.log('⚠️ Billstack API credentials not configured');
         
-        // Ask user to set email anyway for when Billstack is configured later
+        // Ask user to set email anyway for when Billstack is configured
         if (!user.email || !isValidEmail(user.email)) {
-          console.log(`📧 User ${userId} needs email (Billstack not configured yet)`);
+          console.log(`📧 User ${userId} needs email (Billstack API not configured yet)`);
           return await handleEmailUpdate(ctx, users, userId, user, CONFIG, sessions);
         }
         
         return await ctx.reply(
-          `⚠️ *VIRTUAL ACCOUNT SERVICE TEMPORARILY UNAVAILABLE*\n\n` +
-          `🏦 *Status\\:* Maintenance in Progress\n\n` +
+          `⚠️ *VIRTUAL ACCOUNT SERVICE CONFIGURATION PENDING*\n\n` +
+          `🔧 *Status\\:* API Configuration Required\n\n` +
           `📧 *Your Email\\:* ✅ SET \\(${escapeMarkdown(user.email)}\\)\n` +
           `🛂 *Your KYC\\:* ✅ APPROVED\n\n` +
-          `💡 *What to do\\:*\n` +
-          `1\\. Your email is saved for when service resumes\n` +
-          `2\\. Contact @opuenekeke for manual deposit options\n` +
-          `3\\. Try again in a few hours\n\n` +
+          `💡 *What this means\\:*\n` +
+          `• Your email is saved and ready\n` +
+          `• Admin needs to configure Billstack API keys\n` +
+          `• Virtual accounts will work after configuration\n\n` +
+          `📞 *Contact @opuenekeke to complete setup*\n` +
           `🆔 *Your User ID\\:* \`${userId}\``,
           {
             parse_mode: 'MarkdownV2',
@@ -354,8 +358,10 @@ module.exports = {
             errorMessage = 'Invalid email address. Please update your email.';
           } else if (error.message.includes('KYC')) {
             errorMessage = 'KYC verification required. Contact admin.';
-          } else if (error.message.includes('not configured')) {
-            errorMessage = 'Billstack service not configured. Contact admin.';
+          } else if (error.message.includes('API credentials')) {
+            errorMessage = 'Billstack API not configured. Contact admin.';
+          } else if (error.message.includes('authentication')) {
+            errorMessage = 'Billstack authentication failed. Contact admin.';
           }
           
           return await ctx.reply(
@@ -413,7 +419,7 @@ module.exports = {
     }
   },
 
-  // Handle text messages (email input only - NO BVN) - FIXED: Save email properly
+  // Handle text messages (email input only - NO BVN)
   handleText: async (ctx, text, session, user, users, transactions, sessions, CONFIG) => {
     try {
       const userId = ctx.from.id.toString();
@@ -435,7 +441,7 @@ module.exports = {
           );
         }
         
-        // FIX: Save email properly to user object
+        // Save email properly to user object
         userData.email = email;
         
         // Also update the main users object
@@ -445,7 +451,6 @@ module.exports = {
         users[userId].email = email;
         
         console.log(`✅ Email saved for user ${userId}: ${email}`);
-        console.log(`📝 User ${userId} data after save:`, users[userId]);
         
         // Clear session
         delete sessions[userId];
@@ -454,11 +459,11 @@ module.exports = {
           `✅ *EMAIL SAVED\\!*\n\n` +
           `📧 *Your Email\\:* ${escapeMarkdown(email)}\n\n` +
           `🎉 Email saved successfully\\!\n` +
-          `You can now create your virtual account when Billstack is configured\\.\n\n` +
+          `Virtual account will be created when Billstack API is configured\\.\n\n` +
           `💡 *Next Steps\\:*\n` +
-          `1\\. Billstack configuration pending by admin\n` +
-          `2\\. Contact @opuenekeke for updates\n` +
-          `3\\. Try deposit again in a few hours`,
+          `1\\. Admin will configure Billstack API\n` +
+          `2\\. Try deposit again after configuration\n` +
+          `3\\. Contact @opuenekeke for updates`,
           {
             parse_mode: 'MarkdownV2',
             ...Markup.inlineKeyboard([
@@ -703,9 +708,8 @@ module.exports = {
     };
   },
 
-  // FIX: Added handleMonnifyWebhook for backward compatibility
+  // For backward compatibility
   handleMonnifyWebhook: function(bot, users, transactions, CONFIG, virtualAccounts) {
-    // Just call the Billstack webhook handler since it's the same format
     return this.handleBillstackWebhook(bot, users, transactions, CONFIG, virtualAccounts);
   }
 };
