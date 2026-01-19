@@ -678,7 +678,33 @@ if (Object.keys(kycCallbacks).length > 0) {
   });
 }
 
-// Register deposit-related callbacks manually since depositFunds doesn't have getCallbacks
+// ==================== DEPOSIT CALLBACKS (ADDED) ====================
+// Register deposit-related callbacks from depositFunds module
+bot.action('create_billstack_account', (ctx) => 
+  depositFunds.handleCreateBillstackAccount(ctx, users, virtualAccounts, CONFIG, sessions, bot)
+);
+
+bot.action('manual_deposit', (ctx) => 
+  depositFunds.handleManualDeposit(ctx)
+);
+
+bot.action('contact_admin', (ctx) => 
+  depositFunds.handleContactAdmin(ctx)
+);
+
+bot.action('update_email_back', (ctx) => 
+  depositFunds.handleUpdateEmailBack(ctx)
+);
+
+bot.action('refresh_virtual_account', (ctx) => 
+  depositFunds.handleRefreshVirtualAccount(ctx, users, virtualAccounts)
+);
+
+bot.action('try_virtual_account', (ctx) => 
+  depositFunds.handleCreateBillstackAccount(ctx, users, virtualAccounts, CONFIG, sessions, bot)
+);
+
+// Register existing deposit callbacks
 bot.action(/^deposit_email_confirm$/, async (ctx) => {
   try {
     const userId = ctx.from.id.toString();
