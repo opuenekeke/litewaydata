@@ -1,3 +1,13 @@
+// Debug: Check environment variables
+console.log('🔍 ENVIRONMENT VARIABLES DEBUG:');
+console.log('BOT_TOKEN:', process.env.BOT_TOKEN ? 'SET' : 'NOT SET');
+console.log('VTU_API_KEY:', process.env.VTU_API_KEY ? 'SET' : 'NOT SET');
+console.log('BILLSTACK_API_KEY:', process.env.BILLSTACK_API_KEY ? 'SET' : 'NOT SET');
+console.log('BILLSTACK_SECRET_KEY:', process.env.BILLSTACK_SECRET_KEY ? 'SET' : 'NOT SET');
+console.log('ADMIN_ID:', process.env.ADMIN_ID || 'NOT SET');
+
+
+
 // index.js - MAIN ENTRY POINT (UPDATED VERSION)
 require('dotenv').config();
 const { Telegraf, Markup } = require('telegraf');

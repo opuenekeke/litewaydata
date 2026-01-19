@@ -26,16 +26,26 @@ function isValidEmail(email) {
   return emailRegex.test(email);
 }
 
-// Billstack.io API Functions - CORRECTED TO USE API KEYS
+// Billstack.io API Functions
 async function generateBillstackAccessToken(CONFIG) {
   try {
+    console.log('🔑 Generating Billstack access token...');
+    console.log('API Key present:', !!CONFIG.BILLSTACK_API_KEY);
+    console.log('Secret Key present:', !!CONFIG.BILLSTACK_SECRET_KEY);
+    
     // Check if Billstack API credentials are configured
     if (!CONFIG.BILLSTACK_API_KEY || !CONFIG.BILLSTACK_SECRET_KEY) {
+      console.error('❌ Billstack API credentials missing:', {
+        hasApiKey: !!CONFIG.BILLSTACK_API_KEY,
+        hasSecretKey: !!CONFIG.BILLSTACK_SECRET_KEY
+      });
       throw new Error('Billstack API credentials not configured');
     }
     
     // Billstack uses API key + Secret key for authentication
     const authString = Buffer.from(`${CONFIG.BILLSTACK_API_KEY}:${CONFIG.BILLSTACK_SECRET_KEY}`).toString('base64');
+    
+    console.log('📤 Making auth request to Billstack...');
     
     const response = await axios.post(
       `${CONFIG.BILLSTACK_BASE_URL || 'https://api.billstack.io'}/v1/auth/token`,
@@ -48,6 +58,11 @@ async function generateBillstackAccessToken(CONFIG) {
         timeout: 10000
       }
     );
+    
+    console.log('📥 Billstack auth response:', {
+      success: response.data.success,
+      hasToken: !!(response.data.data?.access_token)
+    });
     
     if (response.data.success && response.data.data?.access_token) {
       return response.data.data.access_token;
@@ -245,9 +260,9 @@ async function handleEmailUpdate(ctx, users, userId, user, CONFIG, sessions) {
   }
 }
 
-// Main exports - FIXED: Use correct Billstack API key configuration
+// Main exports
 module.exports = {
-  // Handle deposit command - FIXED: Check for Billstack API keys
+  // Handle deposit command
   handleDeposit: async (ctx, users, virtualAccounts, CONFIG, sessions) => {
     try {
       const userId = ctx.from.id.toString();
@@ -271,18 +286,26 @@ module.exports = {
         console.log(`📧 Restored email for user ${userId}: ${user.email}`);
       }
       
+      // Debug: Check what's in CONFIG
       console.log(`💳 Deposit requested by user ${userId}:`, {
         hasEmail: !!user.email,
         userEmail: user.email,
         kycStatus: user.kyc,
         hasVirtualAccount: !!user.virtualAccount,
         BILLSTACK_API_KEY: CONFIG.BILLSTACK_API_KEY ? 'SET' : 'NOT SET',
-        BILLSTACK_SECRET_KEY: CONFIG.BILLSTACK_SECRET_KEY ? 'SET' : 'NOT SET'
+        BILLSTACK_SECRET_KEY: CONFIG.BILLSTACK_SECRET_KEY ? 'SET' : 'NOT SET',
+        BILLSTACK_BASE_URL: CONFIG.BILLSTACK_BASE_URL
       });
       
-      // Check if Billstack API credentials are configured
-      if (!CONFIG.BILLSTACK_API_KEY || !CONFIG.BILLSTACK_SECRET_KEY) {
+      // Check if Billstack API credentials are configured - FIXED
+      const billstackConfigured = CONFIG.BILLSTACK_API_KEY && CONFIG.BILLSTACK_SECRET_KEY;
+      
+      if (!billstackConfigured) {
         console.log('⚠️ Billstack API credentials not configured');
+        console.log('Current environment variables:', {
+          BILLSTACK_API_KEY: process.env.BILLSTACK_API_KEY ? 'SET' : 'NOT SET',
+          BILLSTACK_SECRET_KEY: process.env.BILLSTACK_SECRET_KEY ? 'SET' : 'NOT SET'
+        });
         
         // Ask user to set email anyway for when Billstack is configured
         if (!user.email || !isValidEmail(user.email)) {
@@ -291,14 +314,14 @@ module.exports = {
         }
         
         return await ctx.reply(
-          `⚠️ *VIRTUAL ACCOUNT SERVICE CONFIGURATION PENDING*\n\n` +
-          `🔧 *Status\\:* API Configuration Required\n\n` +
+          `🔧 *BILLSTACK API CONFIGURATION REQUIRED*\n\n` +
+          `🏦 *Status\\:* Admin Setup in Progress\n\n` +
           `📧 *Your Email\\:* ✅ SET \\(${escapeMarkdown(user.email)}\\)\n` +
           `🛂 *Your KYC\\:* ✅ APPROVED\n\n` +
           `💡 *What this means\\:*\n` +
-          `• Your email is saved and ready\n` +
+          `• Your account is ready for virtual account\n` +
           `• Admin needs to configure Billstack API keys\n` +
-          `• Virtual accounts will work after configuration\n\n` +
+          `• You will be notified when setup is complete\n\n` +
           `📞 *Contact @opuenekeke to complete setup*\n` +
           `🆔 *Your User ID\\:* \`${userId}\``,
           {
