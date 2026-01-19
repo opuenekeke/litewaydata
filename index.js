@@ -153,6 +153,8 @@ app.use(express.json());
 // Webhook endpoint
 app.post('/monnify-webhook', depositFunds.handleMonnifyWebhook(bot, users, transactions, CONFIG, virtualAccounts));
 
+app.post('/billstack-webhook', depositFunds.handleBillstackWebhook(bot, users, transactions, CONFIG, virtualAccounts));
+
 const WEBHOOK_PORT = process.env.PORT || 3000;
 app.listen(WEBHOOK_PORT, () => {
   console.log(`🌐 Webhook server running on port ${WEBHOOK_PORT}`);

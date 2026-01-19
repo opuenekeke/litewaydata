@@ -1,4 +1,4 @@
-// app/depositFunds.js - COMPLETE FIXED VERSION
+// app/depositFunds.js - CONVERTED TO BILLSTACK.IO (NO BVN REQUIRED)
 const axios = require('axios');
 const crypto = require('crypto');
 const { Markup } = require('telegraf');
@@ -26,83 +26,74 @@ function isValidEmail(email) {
   return emailRegex.test(email);
 }
 
-function maskBVN(bvn) {
-  if (!bvn || bvn.length !== 11) return 'Invalid BVN';
-  return `${bvn.substring(0, 3)}*****${bvn.substring(8)}`;
-}
-
-async function generateMonnifyAccessToken(CONFIG) {
+// Billstack.io API Functions
+async function generateBillstackAccessToken(CONFIG) {
   try {
-    const authString = Buffer.from(`${CONFIG.MONNIFY_API_KEY}:${CONFIG.MONNIFY_SECRET_KEY}`).toString('base64');
-    
     const response = await axios.post(
-      `${CONFIG.MONNIFY_BASE_URL}/api/v1/auth/login`,
-      {},
+      `${CONFIG.BILLSTACK_BASE_URL || 'https://api.billstack.io'}/v1/auth/login`,
+      {
+        email: CONFIG.BILLSTACK_EMAIL,
+        password: CONFIG.BILLSTACK_PASSWORD
+      },
       {
         headers: {
-          'Authorization': `Basic ${authString}`,
           'Content-Type': 'application/json'
         },
         timeout: 10000
       }
     );
     
-    if (response.data.requestSuccessful && response.data.responseBody) {
-      return response.data.responseBody.accessToken;
+    if (response.data.success && response.data.data?.token) {
+      return response.data.data.token;
     }
-    throw new Error('Failed to get access token: ' + (response.data.responseMessage || 'Unknown error'));
+    throw new Error('Failed to get Billstack access token');
   } catch (error) {
-    console.error('❌ Monnify auth error:', error.message);
-    if (error.response?.data) {
-      console.error('❌ API Response:', error.response.data);
-    }
+    console.error('❌ Billstack auth error:', error.message);
     throw error;
   }
 }
 
 async function createVirtualAccountForUser(userId, user, virtualAccounts, CONFIG) {
   try {
-    console.log(`🔄 Creating virtual account for user ${userId}`);
+    console.log(`🔄 Creating Billstack virtual account for user ${userId}`);
     
-    if (!CONFIG.MONNIFY_ENABLED) {
-      throw new Error('Monnify not enabled');
+    if (!CONFIG.BILLSTACK_ENABLED) {
+      throw new Error('Billstack not enabled');
     }
     
-    // Check if user has verified BVN
-    if (!user.bvn || !user.bvnVerified) {
-      throw new Error('BVN not verified');
-    }
-    
-    // Check if user has valid email
+    // Check if user has valid email (optional but recommended)
     if (!user.email || !isValidEmail(user.email)) {
-      throw new Error('Invalid email address');
+      throw new Error('Valid email required for virtual account');
     }
     
-    const accessToken = await generateMonnifyAccessToken(CONFIG);
+    // Check KYC status (required)
+    if (user.kyc !== 'approved') {
+      throw new Error('KYC approval required for virtual account');
+    }
+    
+    const accessToken = await generateBillstackAccessToken(CONFIG);
     
     // Generate unique reference
     const accountReference = `VTU_${userId}_${Date.now()}`;
     const accountName = user.fullName || `User ${userId}`;
     
+    // Billstack virtual account payload
     const payload = {
-      accountReference: accountReference,
-      accountName: accountName,
-      currencyCode: "NGN",
-      contractCode: CONFIG.MONNIFY_CONTRACT_CODE,
-      customerEmail: user.email,
-      customerName: accountName,
-      getAllAvailableBanks: false,
-      preferredBanks: ["035"], // WEMA Bank
-      bvn: user.bvn
+      customer_name: accountName,
+      customer_email: user.email,
+      customer_phone: user.phone || `+234${userId.substring(0, 10)}`, // Use user ID as phone if not provided
+      account_reference: accountReference,
+      bvn: user.bvn || '', // Optional, not required
+      nin: user.nin || '', // Optional
+      currency: 'NGN',
+      bank_name: 'WEMA BANK',
+      bank_code: '035'
     };
     
-    console.log('📤 Creating virtual account with payload:', {
-      ...payload,
-      bvn: maskBVN(user.bvn)
-    });
+    console.log('📤 Creating Billstack virtual account with payload:', payload);
     
     const response = await axios.post(
-      `${CONFIG.MONNIFY_BASE_URL}/api/v2/bank-transfer/reserved-accounts`,
+      `${CONFIG.BILLSTACK_BASE_URL || 'https://api.billstack.io'}/v1/virtual-accounts`,
       payload,
       {
         headers: {
@@ -113,43 +104,42 @@ async function createVirtualAccountForUser(userId, user, virtualAccounts, CONFIG
       }
     );
     
-    console.log('📥 Virtual account response:', response.data);
+    console.log('📥 Billstack response:', response.data);
     
-    if (response.data.requestSuccessful && response.data.responseBody) {
-      const accountDetails = response.data.responseBody;
+    if (response.data.success && response.data.data) {
+      const accountDetails = response.data.data;
       
       // Store virtual account details
       virtualAccounts[userId] = {
         accountReference: accountReference,
-        accountNumber: accountDetails.accounts[0].accountNumber,
-        accountName: accountDetails.accountName,
-        bankName: accountDetails.accounts[0].bankName,
-        bankCode: accountDetails.accounts[0].bankCode,
+        accountNumber: accountDetails.account_number,
+        accountName: accountDetails.account_name,
+        bankName: accountDetails.bank_name || 'WEMA BANK',
+        bankCode: accountDetails.bank_code || '035',
         customerEmail: user.email,
         customerName: accountName,
-        bvn: maskBVN(user.bvn),
-        bvnVerified: true,
         created: new Date().toISOString(),
-        active: true
+        active: true,
+        provider: 'billstack'
       };
       
       // Update user record
       user.virtualAccount = accountReference;
-      user.virtualAccountNumber = accountDetails.accounts[0].accountNumber;
-      user.virtualAccountBank = accountDetails.accounts[0].bankName;
+      user.virtualAccountNumber = accountDetails.account_number;
+      user.virtualAccountBank = accountDetails.bank_name || 'WEMA BANK';
       
-      console.log(`✅ Virtual account created for user ${userId}:`, {
-        accountNumber: accountDetails.accounts[0].accountNumber,
-        bankName: accountDetails.accounts[0].bankName
+      console.log(`✅ Billstack virtual account created for user ${userId}:`, {
+        accountNumber: accountDetails.account_number,
+        bankName: accountDetails.bank_name
       });
       
       return virtualAccounts[userId];
     }
     
-    throw new Error(response.data.responseMessage || 'Failed to create virtual account');
+    throw new Error(response.data.message || 'Failed to create virtual account');
     
   } catch (error) {
-    console.error('❌ Create virtual account error:', error.message);
+    console.error('❌ Create Billstack virtual account error:', error.message);
     if (error.response?.data) {
       console.error('❌ API Response:', error.response.data);
     }
@@ -159,7 +149,7 @@ async function createVirtualAccountForUser(userId, user, virtualAccounts, CONFIG
 
 async function getVirtualAccountDetails(userId, user, virtualAccounts, CONFIG) {
   try {
-    if (!CONFIG.MONNIFY_ENABLED) {
+    if (!CONFIG.BILLSTACK_ENABLED) {
       return null;
     }
     
@@ -168,12 +158,12 @@ async function getVirtualAccountDetails(userId, user, virtualAccounts, CONFIG) {
       return virtualAccounts[userId];
     }
     
-    // If user has virtual account reference, fetch from Monnify
+    // If user has virtual account reference, fetch from Billstack
     if (user && user.virtualAccount) {
-      const accessToken = await generateMonnifyAccessToken(CONFIG);
+      const accessToken = await generateBillstackAccessToken(CONFIG);
       
       const response = await axios.get(
-        `${CONFIG.MONNIFY_BASE_URL}/api/v2/bank-transfer/reserved-accounts/${user.virtualAccount}`,
+        `${CONFIG.BILLSTACK_BASE_URL || 'https://api.billstack.io'}/v1/virtual-accounts/${user.virtualAccount}`,
         {
           headers: {
             'Authorization': `Bearer ${accessToken}`,
@@ -183,27 +173,26 @@ async function getVirtualAccountDetails(userId, user, virtualAccounts, CONFIG) {
         }
       );
       
-      if (response.data.requestSuccessful && response.data.responseBody) {
-        const accountDetails = response.data.responseBody;
+      if (response.data.success && response.data.data) {
+        const accountDetails = response.data.data;
         virtualAccounts[userId] = {
           accountReference: user.virtualAccount,
-          accountNumber: accountDetails.accounts[0].accountNumber,
-          accountName: accountDetails.accountName,
-          bankName: accountDetails.accounts[0].bankName,
-          bankCode: accountDetails.accounts[0].bankCode,
+          accountNumber: accountDetails.account_number,
+          accountName: accountDetails.account_name,
+          bankName: accountDetails.bank_name || 'WEMA BANK',
+          bankCode: accountDetails.bank_code || '035',
           customerEmail: user.email,
           customerName: user.fullName,
-          bvn: user.bvn ? maskBVN(user.bvn) : 'Not provided',
-          bvnVerified: user.bvnVerified || false,
-          created: accountDetails.createdOn,
-          active: true
+          created: accountDetails.created_at,
+          active: accountDetails.status === 'active',
+          provider: 'billstack'
         };
         return virtualAccounts[userId];
       }
     }
     return null;
   } catch (error) {
-    console.error('❌ Get virtual account error:', error.message);
+    console.error('❌ Get Billstack virtual account error:', error.message);
     return null;
   }
 }
@@ -221,13 +210,12 @@ async function handleEmailUpdate(ctx, users, userId, user, CONFIG, sessions) {
       `🔒 *Why email is required\\?*\n` +
       `• Required for virtual account creation\n` +
       `• Used for transaction notifications\n` +
-      `• Required by financial regulations\n\n` +
+      `• Better security\n\n` +
       `📛 *Current Email\\:* ${user.email || 'Not set'}\n\n` +
       `📝 *Enter your valid email address\\:*\n\n` +
       `💡 *Examples\\:*\n` +
       `• john\\_doe@gmail\\.com\n` +
-      `• jane\\_smith@yahoo\\.com\n` +
-      `• user123@outlook\\.com`,
+      `• jane\\_smith@yahoo\\.com`,
       {
         parse_mode: 'MarkdownV2',
         ...Markup.inlineKeyboard([
@@ -245,69 +233,6 @@ async function handleEmailUpdate(ctx, users, userId, user, CONFIG, sessions) {
   }
 }
 
-async function handleBVNSubmission(ctx, users, userId, user, CONFIG, sessions) {
-  try {
-    // Check if user has submitted BVN but not verified
-    if (user.bvn && !user.bvnVerified) {
-      return await ctx.reply(
-        `🆔 *BVN VERIFICATION PENDING*\n\n` +
-        `✅ *BVN Submitted\\:* \`${maskBVN(user.bvn)}\`\n` +
-        `📋 *Status\\:* ⏳ Under Review\n\n` +
-        `⏰ *Processing Time\\:*\n` +
-        `Your BVN is being verified by our security team\\.\n` +
-        `Please wait for admin approval\\.\n\n` +
-        `📞 *Need help\\?*\n` +
-        `Contact @opuenekeke for assistance\\.`,
-        {
-          parse_mode: 'MarkdownV2',
-          ...Markup.inlineKeyboard([
-            [Markup.button.callback('📧 Update Email', 'update_email')],
-            [Markup.button.callback('🏠 Home', 'start')]
-          ])
-        }
-      );
-    }
-    
-    // If no BVN, ask for BVN submission
-    await ctx.reply(
-      `🆔 *BVN VERIFICATION REQUIRED*\n\n` +
-      `🔒 *Why BVN\\?*\n` +
-      `• Required for virtual account creation\n` +
-      `• Ensures account security\n` +
-      `• Required by CBN regulations\n` +
-      `• Protects against fraud\n\n` +
-      `📋 *How it works\\:*\n` +
-      `1\\. Submit your 11\\-digit BVN\n` +
-      `2\\. Our team verifies it \\(1\\-2 hours\\)\n` +
-      `3\\. Get virtual account instantly\n` +
-      `4\\. Start depositing funds\n\n` +
-      `📝 *Enter your 11\\-digit BVN\\:*\n\n` +
-      `💡 *Example\\:* 12345678901`,
-      {
-        parse_mode: 'MarkdownV2',
-        ...Markup.inlineKeyboard([
-          [Markup.button.callback('📧 Update Email', 'update_email')],
-          [Markup.button.callback('❌ Cancel', 'start')]
-        ])
-      }
-    );
-    
-    // Set session for BVN collection
-    sessions[userId] = {
-      action: 'bvn_submission',
-      step: 1,
-      userId: userId
-    };
-    
-  } catch (error) {
-    console.error('❌ BVN submission error:', error);
-    await ctx.reply(
-      '❌ Error processing BVN submission\\. Please try again\\.',
-      { parse_mode: 'MarkdownV2' }
-    );
-  }
-}
-
 // Main exports
 module.exports = {
   // Handle deposit command
@@ -318,8 +243,8 @@ module.exports = {
         wallet: 0,
         fullName: `${ctx.from.first_name || ''} ${ctx.from.last_name || ''}`.trim() || ctx.from.username || `User ${userId}`,
         email: null,
-        bvn: null,
-        bvnVerified: false,
+        phone: null,
+        kyc: 'pending',
         virtualAccount: null,
         virtualAccountNumber: null,
         virtualAccountBank: null
@@ -330,41 +255,31 @@ module.exports = {
       
       console.log(`💳 Deposit requested by user ${userId}:`, {
         hasEmail: !!user.email,
-        hasBVN: !!user.bvn,
-        bvnVerified: user.bvnVerified,
+        kycStatus: user.kyc,
         hasVirtualAccount: !!user.virtualAccount
       });
       
-      if (!CONFIG.MONNIFY_ENABLED) {
+      // Check KYC status first
+      if (user.kyc !== 'approved') {
         return await ctx.reply(
-          `💳 *MANUAL DEPOSIT*\n\n` +
-          `💰 *Current Balance\\:* ${formatCurrency(user.wallet)}\n\n` +
-          `📥 *To Add Funds\\:*\n` +
+          `❌ *KYC VERIFICATION REQUIRED*\n\n` +
+          `📋 *Your KYC Status\\:* ${user.kyc.toUpperCase()}\n\n` +
+          `🛂 *To Get Verified\\:*\n` +
           `1\\. Contact @opuenekeke\n` +
-          `2\\. Send payment proof\n` +
-          `3\\. Include your User ID\\: \`${userId}\`\n` +
-          `4\\. Wait for manual approval\n\n` +
-          `💵 *Payment Methods\\:*\n` +
-          `• Bank Transfer\n` +
-          `• USDT \\(TRC20\\)\n` +
-          `• Mobile Money`,
+          `2\\. Provide your User ID\\: \`${userId}\`\n` +
+          `3\\. Wait for admin approval\n\n` +
+          `⏰ *Processing Time\\:* 1\\-2 hours`,
           { parse_mode: 'MarkdownV2' }
         );
       }
       
-      // Step 1: Check email
+      // Check email (optional but recommended)
       if (!user.email || !isValidEmail(user.email)) {
         console.log(`📧 User ${userId} needs email`);
         return await handleEmailUpdate(ctx, users, userId, user, CONFIG, sessions);
       }
       
-      // Step 2: Check BVN
-      if (!user.bvn || !user.bvnVerified) {
-        console.log(`🆔 User ${userId} needs BVN`);
-        return await handleBVNSubmission(ctx, users, userId, user, CONFIG, sessions);
-      }
-      
-      // Step 3: Get or create virtual account
+      // Get or create virtual account
       let accountDetails = await getVirtualAccountDetails(userId, user, virtualAccounts, CONFIG);
       
       if (!accountDetails) {
@@ -387,10 +302,10 @@ module.exports = {
           console.error('❌ Virtual account creation failed:', error);
           
           let errorMessage = 'Failed to create virtual account. Please try again later.';
-          if (error.message.includes('BVN')) {
-            errorMessage = 'BVN verification failed. Please contact admin.';
-          } else if (error.message.includes('email')) {
-            errorMessage = 'Email validation failed. Please update your email.';
+          if (error.message.includes('email')) {
+            errorMessage = 'Invalid email address. Please update your email.';
+          } else if (error.message.includes('KYC')) {
+            errorMessage = 'KYC verification required. Contact admin.';
           }
           
           return await ctx.reply(
@@ -409,13 +324,13 @@ module.exports = {
         }
       }
       
-      // Step 4: Show account details
+      // Show account details
       const instructions = `💰 *YOUR VIRTUAL ACCOUNT*\n\n` +
         `🏦 **Bank Name\\:** ${accountDetails.bankName || 'WEMA BANK'}\n` +
         `🔢 **Account Number\\:** \`${accountDetails.accountNumber}\`\n` +
         `📛 **Account Name\\:** ${accountDetails.accountName}\n` +
         `💳 **Account Type\\:** Savings\n` +
-        `🆔 **BVN Verified\\:** ✅ YES\n\n` +
+        `✅ **KYC Verified\\:** YES\n\n` +
         `📝 **How to Deposit\\:**\n` +
         `1\\. Open your bank app or visit any bank branch\n` +
         `2\\. Transfer to the account above\n` +
@@ -448,13 +363,13 @@ module.exports = {
     }
   },
 
-  // Handle text messages (email and BVN input)
+  // Handle text messages (email input only - NO BVN)
   handleText: async (ctx, text, session, user, users, transactions, sessions, CONFIG) => {
     try {
       const userId = ctx.from.id.toString();
       const userData = users[userId] || {};
       
-      // Handle email update
+      // Handle email update only
       if (session.action === 'update_email' && session.step === 1) {
         const email = text.trim().toLowerCase();
         
@@ -479,77 +394,15 @@ module.exports = {
         
         console.log(`✅ Email saved for user ${userId}: ${email}`);
         
-        // Ask for BVN next
-        sessions[userId] = {
-          action: 'bvn_submission',
-          step: 1,
-          userId: userId
-        };
-        
         await ctx.reply(
           `✅ *EMAIL SAVED\\!*\n\n` +
           `📧 *Your Email\\:* ${escapeMarkdown(email)}\n\n` +
-          `🆔 *NOW ENTER YOUR BVN*\n\n` +
-          `Please enter your 11\\-digit BVN\\:\n\n` +
-          `💡 *Example\\:* 12345678901`,
-          { parse_mode: 'MarkdownV2' }
-        );
-      }
-      
-      // Handle BVN submission
-      else if (session.action === 'bvn_submission' && session.step === 1) {
-        const bvn = text.trim();
-        
-        // Validate BVN
-        if (!/^\d{11}$/.test(bvn)) {
-          return await ctx.reply(
-            '❌ *INVALID BVN*\n\n' +
-            'BVN must be exactly 11 digits\\.\n\n' +
-            '📝 *Example\\:* 12345678901\n\n' +
-            'Please enter your 11\\-digit BVN\\:',
-            { parse_mode: 'MarkdownV2' }
-          );
-        }
-        
-        // Save BVN (not verified yet)
-        userData.bvn = bvn;
-        userData.bvnVerified = false;
-        userData.bvnSubmittedAt = new Date().toISOString();
-        users[userId] = userData;
-        
-        // Clear session
-        delete sessions[userId];
-        
-        // Notify admin for verification
-        try {
-          await ctx.telegram.sendMessage(
-            CONFIG.ADMIN_ID,
-            `🆔 *NEW BVN SUBMISSION*\n\n` +
-            `👤 *User\\:* ${userId}\n` +
-            `📛 *Name\\:* ${userData.fullName || 'Not set'}\n` +
-            `📧 *Email\\:* ${userData.email || 'Not set'}\n` +
-            `🆔 *BVN\\:* \`${maskBVN(bvn)}\`\n` +
-            `⏰ *Submitted\\:* ${new Date().toLocaleString('en-NG')}\n\n` +
-            `✅ *To Verify\\:* /verify\\_bvn ${userId}`,
-            { parse_mode: 'MarkdownV2' }
-          );
-        } catch (error) {
-          console.error('Failed to notify admin:', error);
-        }
-        
-        await ctx.reply(
-          `✅ *BVN SUBMITTED\\!*\n\n` +
-          `🆔 *BVN\\:* \`${maskBVN(bvn)}\`\n` +
-          `📋 *Status\\:* ⏳ Under Review\n\n` +
-          `📝 *Next Steps\\:*\n` +
-          `1\\. Our team verifies your BVN \\(1\\-2 hours\\)\n` +
-          `2\\. You'll be notified when verified\n` +
-          `3\\. Virtual account will be created automatically\n\n` +
-          `📞 *Contact @opuenekeke if urgent*`,
+          `🎉 You can now create your virtual account\\!\n` +
+          `Tap "💳 Deposit Funds" again to continue\\.`,
           {
             parse_mode: 'MarkdownV2',
             ...Markup.inlineKeyboard([
-              [Markup.button.callback('💳 Try Deposit Now', 'start')],
+              [Markup.button.callback('💳 Create Account Now', 'start')],
               [Markup.button.callback('🏠 Home', 'start')]
             ])
           }
@@ -571,7 +424,6 @@ module.exports = {
       'copy_(.+)': async (ctx) => {
         const accountNumber = ctx.match[1];
         await ctx.answerCbQuery(`Account number copied: ${accountNumber}`);
-        // You can also send it as a message
         await ctx.reply(`📋 *Account Number*\n\`${accountNumber}\``, { 
           parse_mode: 'MarkdownV2',
           ...Markup.inlineKeyboard([
@@ -621,56 +473,81 @@ module.exports = {
     };
   },
 
-  // Monnify webhook handler - FIXED VERSION
-  handleMonnifyWebhook: (bot, users, transactions, CONFIG, virtualAccounts) => {
+  // Billstack.io webhook handler
+  handleBillstackWebhook: (bot, users, transactions, CONFIG, virtualAccounts) => {
     return async (req, res) => {
-      console.log('📨 Monnify Webhook Received:', {
-        eventType: req.body?.eventType,
+      console.log('📨 Billstack Webhook Received:', {
+        event: req.body?.event,
         timestamp: new Date().toISOString()
       });
       
       try {
-        // Get the event data
-        const eventData = req.body.eventData;
-        const eventType = req.body.eventType;
+        const payload = req.body;
+        const event = payload.event;
         
-        // For SUCCESSFUL_TRANSACTION
-        if (eventType === 'SUCCESSFUL_TRANSACTION' && eventData?.paymentStatus === 'PAID') {
-          const accountReference = eventData.product?.reference;
-          const amount = parseFloat(eventData.amount);
-          const transactionRef = eventData.transactionReference;
+        // Log full payload for debugging
+        console.log('🔍 Billstack webhook payload:', JSON.stringify(payload, null, 2));
+        
+        // Handle deposit event
+        if (event === 'virtual_account.deposit' || event === 'transaction.success') {
+          const data = payload.data || payload;
+          const amount = parseFloat(data.amount || 0);
+          const accountNumber = data.account_number;
+          const reference = data.reference || data.transaction_reference;
+          const customerEmail = data.customer_email;
+          const customerName = data.customer_name;
           
-          console.log('💰 Processing deposit:', {
-            accountReference,
+          console.log('💰 Processing Billstack deposit:', {
+            accountNumber,
             amount,
-            transactionRef
+            reference,
+            customerEmail
           });
           
-          if (!accountReference) {
-            console.error('❌ No account reference found');
+          if (!amount || amount <= 0) {
+            console.error('❌ Invalid amount');
             return res.status(400).json({ 
               status: 'error', 
-              message: 'No account reference' 
+              message: 'Invalid amount' 
             });
           }
           
-          // Find user by account reference
-          // Reference format: VTU_{userId}_{timestamp}
-          const referenceParts = accountReference.split('_');
-          if (referenceParts.length < 2) {
-            console.error('❌ Invalid account reference format:', accountReference);
-            return res.status(400).json({ 
-              status: 'error', 
-              message: 'Invalid reference format' 
-            });
+          // Find user by account number or email
+          let userId = null;
+          
+          // Method 1: Find by account number
+          for (const [uid, va] of Object.entries(virtualAccounts)) {
+            if (va.accountNumber === accountNumber) {
+              userId = uid;
+              console.log(`🔑 Found user by account number: ${userId}`);
+              break;
+            }
           }
           
-          const userId = referenceParts[1]; // Get userId from reference
+          // Method 2: Find by email
+          if (!userId && customerEmail) {
+            for (const [uid, user] of Object.entries(users)) {
+              if (user.email === customerEmail) {
+                userId = uid;
+                console.log(`🔑 Found user by email: ${userId}`);
+                break;
+              }
+            }
+          }
           
-          if (!users[userId]) {
-            console.error(`❌ User not found: ${userId}`);
+          // Method 3: Extract from reference
+          if (!userId && reference) {
+            const refParts = reference.split('_');
+            if (refParts.length >= 2 && refParts[0] === 'VTU') {
+              userId = refParts[1];
+              console.log(`🔑 Found user from reference: ${userId}`);
+            }
+          }
+          
+          if (!userId || !users[userId]) {
+            console.error(`❌ User not found for deposit`);
             
-            // Still return 200 to Monnify so they don't retry
+            // Still return 200 to Billstack so they don't retry
             return res.status(200).json({ 
               status: 'error', 
               message: 'User not found',
@@ -690,18 +567,20 @@ module.exports = {
           transactions[userId].push({
             type: 'deposit',
             amount: amount,
-            method: 'virtual_account',
-            reference: transactionRef,
+            method: 'billstack_virtual_account',
+            reference: reference,
             status: 'completed',
             date: new Date().toLocaleString(),
-            description: 'Monnify virtual account deposit'
+            customerEmail: customerEmail,
+            customerName: customerName,
+            description: 'Billstack virtual account deposit'
           });
           
-          // Update user stats
+          // Update stats
           user.dailyDeposit = (user.dailyDeposit || 0) + amount;
           user.lastDeposit = new Date().toLocaleString();
           
-          console.log(`✅ User ${userId} credited with ${amount}. New balance: ${user.wallet}`);
+          console.log(`✅ User ${userId} credited ${amount}. New balance: ${user.wallet}`);
           
           // Notify user
           try {
@@ -711,7 +590,7 @@ module.exports = {
               `✅ Your deposit has been processed\\!\n\n` +
               `💵 *Amount\\:* ${formatCurrency(amount)}\n` +
               `💳 *New Balance\\:* ${formatCurrency(user.wallet)}\n` +
-              `🔢 *Reference\\:* ${transactionRef}\n` +
+              `🔢 *Reference\\:* ${reference || 'N/A'}\n` +
               `📅 *Date\\:* ${new Date().toLocaleString('en-NG')}\n\n` +
               `🎉 You can now use your funds\\!`,
               { parse_mode: 'MarkdownV2' }
@@ -724,10 +603,10 @@ module.exports = {
           try {
             await bot.telegram.sendMessage(
               CONFIG.ADMIN_ID,
-              `💰 *AUTOMATIC DEPOSIT*\n\n` +
+              `💰 *BILLSTACK DEPOSIT*\n\n` +
               `👤 *User\\:* ${userId}\n` +
               `💵 *Amount\\:* ${formatCurrency(amount)}\n` +
-              `🔢 *Reference\\:* ${transactionRef}\n` +
+              `🔢 *Reference\\:* ${reference || 'N/A'}\n` +
               `💳 *New Balance\\:* ${formatCurrency(user.wallet)}\n` +
               `⏰ *Time\\:* ${new Date().toLocaleString('en-NG')}`,
               { parse_mode: 'MarkdownV2' }
@@ -748,13 +627,13 @@ module.exports = {
         return res.status(200).json({ 
           status: 'received', 
           message: 'Webhook processed',
-          eventType: eventType
+          event: event
         });
         
       } catch (error) {
-        console.error('❌ Webhook processing error:', error);
+        console.error('❌ Billstack webhook error:', error);
         
-        // Always return 200 to Monnify so they don't retry
+        // Always return 200 to Billstack so they don't retry
         return res.status(200).json({ 
           status: 'error', 
           message: 'Processing error',
