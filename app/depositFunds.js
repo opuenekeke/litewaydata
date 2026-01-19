@@ -29,6 +29,11 @@ function isValidEmail(email) {
 // Billstack.io API Functions
 async function generateBillstackAccessToken(CONFIG) {
   try {
+    // Check if Billstack is enabled and has credentials
+    if (!CONFIG.BILLSTACK_EMAIL || !CONFIG.BILLSTACK_PASSWORD) {
+      throw new Error('Billstack credentials not configured');
+    }
+    
     const response = await axios.post(
       `${CONFIG.BILLSTACK_BASE_URL || 'https://api.billstack.io'}/v1/auth/login`,
       {
@@ -57,11 +62,12 @@ async function createVirtualAccountForUser(userId, user, virtualAccounts, CONFIG
   try {
     console.log(`🔄 Creating Billstack virtual account for user ${userId}`);
     
-    if (!CONFIG.BILLSTACK_ENABLED) {
-      throw new Error('Billstack not enabled');
+    // Check if Billstack is properly configured
+    if (!CONFIG.BILLSTACK_EMAIL || !CONFIG.BILLSTACK_PASSWORD) {
+      throw new Error('Billstack not configured. Please contact admin.');
     }
     
-    // Check if user has valid email (optional but recommended)
+    // Check if user has valid email
     if (!user.email || !isValidEmail(user.email)) {
       throw new Error('Valid email required for virtual account');
     }
@@ -149,7 +155,8 @@ async function createVirtualAccountForUser(userId, user, virtualAccounts, CONFIG
 
 async function getVirtualAccountDetails(userId, user, virtualAccounts, CONFIG) {
   try {
-    if (!CONFIG.BILLSTACK_ENABLED) {
+    // Check if Billstack is properly configured
+    if (!CONFIG.BILLSTACK_EMAIL || !CONFIG.BILLSTACK_PASSWORD) {
       return null;
     }
     
@@ -233,9 +240,9 @@ async function handleEmailUpdate(ctx, users, userId, user, CONFIG, sessions) {
   }
 }
 
-// Main exports
+// Main exports - FIXED: Added handleMonnifyWebhook for backward compatibility
 module.exports = {
-  // Handle deposit command
+  // Handle deposit command - FIXED: Added check for Billstack configuration
   handleDeposit: async (ctx, users, virtualAccounts, CONFIG, sessions) => {
     try {
       const userId = ctx.from.id.toString();
@@ -256,8 +263,22 @@ module.exports = {
       console.log(`💳 Deposit requested by user ${userId}:`, {
         hasEmail: !!user.email,
         kycStatus: user.kyc,
-        hasVirtualAccount: !!user.virtualAccount
+        hasVirtualAccount: !!user.virtualAccount,
+        billstackConfigured: !!(CONFIG.BILLSTACK_EMAIL && CONFIG.BILLSTACK_PASSWORD)
       });
+      
+      // Check if Billstack is configured
+      if (!CONFIG.BILLSTACK_EMAIL || !CONFIG.BILLSTACK_PASSWORD) {
+        console.log('⚠️ Billstack not configured in environment variables');
+        return await ctx.reply(
+          `❌ *BILLSTACK NOT CONFIGURED*\n\n` +
+          `💳 *Virtual Account Service Unavailable*\n\n` +
+          `⚠️ Billstack virtual accounts are not configured\\.\n` +
+          `📞 Please contact @opuenekeke for manual deposit instructions\\.\n\n` +
+          `🆔 *Your User ID\\:* \`${userId}\``,
+          { parse_mode: 'MarkdownV2' }
+        );
+      }
       
       // Check KYC status first
       if (user.kyc !== 'approved') {
@@ -273,7 +294,7 @@ module.exports = {
         );
       }
       
-      // Check email (optional but recommended)
+      // Check email (required for Billstack)
       if (!user.email || !isValidEmail(user.email)) {
         console.log(`📧 User ${userId} needs email`);
         return await handleEmailUpdate(ctx, users, userId, user, CONFIG, sessions);
@@ -306,6 +327,8 @@ module.exports = {
             errorMessage = 'Invalid email address. Please update your email.';
           } else if (error.message.includes('KYC')) {
             errorMessage = 'KYC verification required. Contact admin.';
+          } else if (error.message.includes('not configured')) {
+            errorMessage = 'Billstack service not configured. Contact admin.';
           }
           
           return await ctx.reply(
@@ -641,5 +664,11 @@ module.exports = {
         });
       }
     };
+  },
+
+  // FIX: Added handleMonnifyWebhook for backward compatibility
+  handleMonnifyWebhook: function(bot, users, transactions, CONFIG, virtualAccounts) {
+    // Just call the Billstack webhook handler since it's the same format
+    return this.handleBillstackWebhook(bot, users, transactions, CONFIG, virtualAccounts);
   }
 };
