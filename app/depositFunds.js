@@ -69,6 +69,7 @@ async function createVirtualAccountForUser(userId, user, virtualAccounts, CONFIG
     
     // Check if user has valid email
     if (!user.email || !isValidEmail(user.email)) {
+      console.error(`❌ User ${userId} has invalid email:`, user.email);
       throw new Error('Valid email required for virtual account');
     }
     
@@ -240,9 +241,9 @@ async function handleEmailUpdate(ctx, users, userId, user, CONFIG, sessions) {
   }
 }
 
-// Main exports - FIXED: Added handleMonnifyWebhook for backward compatibility
+// Main exports - FIXED: Handle missing Billstack configuration properly
 module.exports = {
-  // Handle deposit command - FIXED: Added check for Billstack configuration
+  // Handle deposit command - FIXED: Check for Billstack configuration properly
   handleDeposit: async (ctx, users, virtualAccounts, CONFIG, sessions) => {
     try {
       const userId = ctx.from.id.toString();
@@ -260,23 +261,49 @@ module.exports = {
       // Initialize user if not exists
       users[userId] = user;
       
+      // FIX: Check if user has email from previous sessions
+      if (!user.email && users[userId] && users[userId].email) {
+        user.email = users[userId].email;
+        console.log(`📧 Restored email for user ${userId}: ${user.email}`);
+      }
+      
       console.log(`💳 Deposit requested by user ${userId}:`, {
         hasEmail: !!user.email,
+        userEmail: user.email,
         kycStatus: user.kyc,
         hasVirtualAccount: !!user.virtualAccount,
-        billstackConfigured: !!(CONFIG.BILLSTACK_EMAIL && CONFIG.BILLSTACK_PASSWORD)
+        billstackConfigured: !!(CONFIG.BILLSTACK_EMAIL && CONFIG.BILLSTACK_PASSWORD),
+        BILLSTACK_EMAIL: CONFIG.BILLSTACK_EMAIL ? 'SET' : 'NOT SET',
+        BILLSTACK_PASSWORD: CONFIG.BILLSTACK_PASSWORD ? 'SET' : 'NOT SET'
       });
       
-      // Check if Billstack is configured
+      // Check if Billstack is configured - FIXED: Show helpful message
       if (!CONFIG.BILLSTACK_EMAIL || !CONFIG.BILLSTACK_PASSWORD) {
         console.log('⚠️ Billstack not configured in environment variables');
+        
+        // Ask user to set email anyway for when Billstack is configured later
+        if (!user.email || !isValidEmail(user.email)) {
+          console.log(`📧 User ${userId} needs email (Billstack not configured yet)`);
+          return await handleEmailUpdate(ctx, users, userId, user, CONFIG, sessions);
+        }
+        
         return await ctx.reply(
-          `❌ *BILLSTACK NOT CONFIGURED*\n\n` +
-          `💳 *Virtual Account Service Unavailable*\n\n` +
-          `⚠️ Billstack virtual accounts are not configured\\.\n` +
-          `📞 Please contact @opuenekeke for manual deposit instructions\\.\n\n` +
+          `⚠️ *VIRTUAL ACCOUNT SERVICE TEMPORARILY UNAVAILABLE*\n\n` +
+          `🏦 *Status\\:* Maintenance in Progress\n\n` +
+          `📧 *Your Email\\:* ✅ SET \\(${escapeMarkdown(user.email)}\\)\n` +
+          `🛂 *Your KYC\\:* ✅ APPROVED\n\n` +
+          `💡 *What to do\\:*\n` +
+          `1\\. Your email is saved for when service resumes\n` +
+          `2\\. Contact @opuenekeke for manual deposit options\n` +
+          `3\\. Try again in a few hours\n\n` +
           `🆔 *Your User ID\\:* \`${userId}\``,
-          { parse_mode: 'MarkdownV2' }
+          {
+            parse_mode: 'MarkdownV2',
+            ...Markup.inlineKeyboard([
+              [Markup.button.callback('📧 Update Email', 'update_email')],
+              [Markup.button.callback('🏠 Home', 'start')]
+            ])
+          }
         );
       }
       
@@ -386,7 +413,7 @@ module.exports = {
     }
   },
 
-  // Handle text messages (email input only - NO BVN)
+  // Handle text messages (email input only - NO BVN) - FIXED: Save email properly
   handleText: async (ctx, text, session, user, users, transactions, sessions, CONFIG) => {
     try {
       const userId = ctx.from.id.toString();
@@ -408,24 +435,34 @@ module.exports = {
           );
         }
         
-        // Save email
+        // FIX: Save email properly to user object
         userData.email = email;
-        users[userId] = userData;
+        
+        // Also update the main users object
+        if (!users[userId]) {
+          users[userId] = {};
+        }
+        users[userId].email = email;
+        
+        console.log(`✅ Email saved for user ${userId}: ${email}`);
+        console.log(`📝 User ${userId} data after save:`, users[userId]);
         
         // Clear session
         delete sessions[userId];
         
-        console.log(`✅ Email saved for user ${userId}: ${email}`);
-        
         await ctx.reply(
           `✅ *EMAIL SAVED\\!*\n\n` +
           `📧 *Your Email\\:* ${escapeMarkdown(email)}\n\n` +
-          `🎉 You can now create your virtual account\\!\n` +
-          `Tap "💳 Deposit Funds" again to continue\\.`,
+          `🎉 Email saved successfully\\!\n` +
+          `You can now create your virtual account when Billstack is configured\\.\n\n` +
+          `💡 *Next Steps\\:*\n` +
+          `1\\. Billstack configuration pending by admin\n` +
+          `2\\. Contact @opuenekeke for updates\n` +
+          `3\\. Try deposit again in a few hours`,
           {
             parse_mode: 'MarkdownV2',
             ...Markup.inlineKeyboard([
-              [Markup.button.callback('💳 Create Account Now', 'start')],
+              [Markup.button.callback('💳 Try Deposit Again', 'start')],
               [Markup.button.callback('🏠 Home', 'start')]
             ])
           }
