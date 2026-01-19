@@ -8,7 +8,7 @@ console.log('ADMIN_ID:', process.env.ADMIN_ID || 'NOT SET');
 
 
 
-// index.js - MAIN ENTRY POINT (UPDATED VERSION)
+// index.js - MAIN ENTRY POINT (COMPLETE VERSION)
 require('dotenv').config();
 const { Telegraf, Markup } = require('telegraf');
 const axios = require('axios');
@@ -48,7 +48,6 @@ const transactions = {};
 const sessions = {};
 const virtualAccounts = {};
 
-// ==================== NETWORK CODES (ADD THIS BACK) ====================
 // Network mapping for VTU API
 const NETWORK_CODES = {
   'MTN': '1',
@@ -63,10 +62,12 @@ const AVAILABLE_NETWORKS = ['MTN', 'Glo', 'AIRTEL', '9MOBILE'];
 // ==================== HELPER FUNCTIONS ====================
 function initUser(userId) {
   if (!users[userId]) {
+    const isAdminUser = userId.toString() === CONFIG.ADMIN_ID.toString();
+    
     users[userId] = {
       telegramId: userId,
       wallet: 0,
-      kycStatus: 'pending',  // Changed from 'kyc' to 'kycStatus' to match deposit module
+      kycStatus: isAdminUser ? 'approved' : 'pending',  // Auto-approve admin
       pin: null,
       pinAttempts: 0,
       pinLocked: false,
@@ -83,7 +84,12 @@ function initUser(userId) {
       dailyDeposit: 0,
       dailyTransfer: 0,
       lastDeposit: null,
-      lastTransfer: null
+      lastTransfer: null,
+      // New KYC fields
+      kycSubmittedDate: null,
+      kycApprovedDate: isAdminUser ? new Date().toISOString() : null,
+      kycRejectedDate: null,
+      kycRejectionReason: null
     };
     transactions[userId] = [];
   }
@@ -362,7 +368,11 @@ bot.hears('📡 Buy Data', (ctx) => buyData.handleData(ctx, users, sessions, CON
 bot.hears('💰 Wallet Balance', (ctx) => walletBalance.handleWallet(ctx, users, CONFIG));
 
 // Deposit Funds - UPDATED WITH SESSIONS PARAMETER
-bot.hears('💳 Deposit Funds', (ctx) => depositFunds.handleDeposit(ctx, users, virtualAccounts, CONFIG, sessions, bot));
+bot.hears('💳 Deposit Funds', (ctx) => {
+  const userId = ctx.from.id.toString();
+  const user = initUser(userId);
+  return depositFunds.handleDeposit(ctx, users, virtualAccounts, CONFIG, sessions, bot);
+});
 
 // Money Transfer
 bot.hears('🏦 Money Transfer', async (ctx) => {
@@ -370,7 +380,7 @@ bot.hears('🏦 Money Transfer', async (ctx) => {
     const userId = ctx.from.id.toString();
     const user = initUser(userId);
     
-    if (user.kycStatus !== 'approved') {  // Changed from user.kyc to user.kycStatus
+    if (user.kycStatus !== 'approved') {
       return await ctx.reply(
         '❌ *KYC VERIFICATION REQUIRED*\n\n' +
         '📝 Your account needs verification\\.\n\n' +
@@ -612,6 +622,7 @@ function getModuleCallbacks(module, moduleName, ...args) {
 const airtimeCallbacks = getModuleCallbacks(buyAirtime, 'Airtime', bot, users, sessions, CONFIG, NETWORK_CODES);
 const dataCallbacks = getModuleCallbacks(buyData, 'Data', bot, users, sessions, CONFIG);
 const adminCallbacks = getModuleCallbacks(admin, 'Admin', bot, users, transactions, CONFIG);
+const kycCallbacks = getModuleCallbacks(kyc, 'KYC', bot, users);
 
 // For deposit, we need to handle it differently since it doesn't have getCallbacks
 console.log(`   ℹ️ Deposit: Using direct registration`);
@@ -647,6 +658,18 @@ if (Object.keys(dataCallbacks).length > 0) {
 if (Object.keys(adminCallbacks).length > 0) {
   Object.entries(adminCallbacks).forEach(([pattern, handler]) => {
     console.log(`   🛠️ Admin callback: ${pattern}`);
+    if (pattern.includes('(') || pattern.includes('.') || pattern.includes('+') || pattern.includes('*')) {
+      bot.action(new RegExp(`^${pattern}$`), handler);
+    } else {
+      bot.action(pattern, handler);
+    }
+  });
+}
+
+// Register KYC callbacks
+if (Object.keys(kycCallbacks).length > 0) {
+  Object.entries(kycCallbacks).forEach(([pattern, handler]) => {
+    console.log(`   🛂 KYC callback: ${pattern}`);
     if (pattern.includes('(') || pattern.includes('.') || pattern.includes('+') || pattern.includes('*')) {
       bot.action(new RegExp(`^${pattern}$`), handler);
     } else {
@@ -948,15 +971,299 @@ bot.on('text', async (ctx) => {
     
     if (!session) return;
     
-    // Check for deposit text handling using the deposit module's handleText
-    const depositTextHandler = depositFunds.handleText;
-    if (depositTextHandler && session.action === 'update_email') {
-      await depositTextHandler(ctx, text, session, user, users, transactions, sessions, CONFIG);
+    // Import text handlers from modules
+    const airtimeTextHandler = require('./app/buyAirtime').handleText;
+    const dataTextHandler = require('./app/buyData').handleText;
+    const depositTextHandler = require('./app/depositFunds').handleText;
+    
+    // Handle airtime text
+    if (session.action === 'airtime') {
+      await airtimeTextHandler(ctx, text, session, user, users, transactions, sessions, NETWORK_CODES, CONFIG);
     }
-    // Handle BANK TRANSFER text (keep your existing code as is)
+    
+    // Handle data text
+    else if (session.action === 'data') {
+      await dataTextHandler(ctx, text, session, user, users, transactions, sessions, NETWORK_CODES, CONFIG);
+    }
+    
+    // Handle deposit text (email updates only)
+    else if (session.action === 'update_email') {
+      // Use deposit module's handleText if available, otherwise use fallback
+      if (depositTextHandler) {
+        await depositTextHandler(ctx, text, session, user, users, transactions, sessions, CONFIG);
+      } else {
+        // Fallback email handler
+        if (session.step === 1) {
+          if (!isValidEmail(text)) {
+            return await ctx.reply(
+              '❌ Invalid email format. Please enter a valid email (e.g., user@example.com):'
+            );
+          }
+          
+          user.email = text;
+          delete sessions[userId];
+          
+          await ctx.reply(
+            `✅ Email saved: ${text}\n\n` +
+            `Now you can create a virtual account.\n\n` +
+            `Click the button below to create your virtual account:`,
+            {
+              parse_mode: 'Markdown',
+              ...Markup.inlineKeyboard([
+                [Markup.button.callback('💳 Create Virtual Account', 'create_virtual_account')],
+                [Markup.button.callback('🏠 Home', 'start')]
+              ])
+            }
+          );
+        }
+      }
+    }
+    
+    // BANK TRANSFER handlers
     else if (session.action === 'bank_transfer') {
-      // Your existing bank transfer text handler code here
-      // [Keep all your existing bank transfer text handling code]
+      if (session.step === 2) {
+        const accountNumber = text.replace(/\s+/g, '');
+        
+        if (!/^\d{10}$/.test(accountNumber)) {
+          return await ctx.reply(
+            '❌ *INVALID ACCOUNT NUMBER*\n\n' +
+            'Account number must be exactly 10 digits\\.\n\n' +
+            '📝 Try again\\:',
+            { parse_mode: 'MarkdownV2' }
+          );
+        }
+        
+        sessions[userId].accountNumber = accountNumber;
+        
+        const loadingMsg = await ctx.reply(
+          `🔄 *Resolving account details\\.\\.\\.*\n\n` +
+          `🔢 *Account Number\\:* ${accountNumber}\n` +
+          `🏦 *Bank\\:* ${escapeMarkdown(session.bankName)}\n\n` +
+          `⏳ Please wait while we fetch account name\\.\\.\\.`,
+          { parse_mode: 'MarkdownV2' }
+        );
+        
+        try {
+          const bankMap = {
+            '044': 'Access Bank',
+            '011': 'First Bank',
+            '058': 'GTBank',
+            '033': 'UBA',
+            '057': 'Zenith Bank',
+            '070': 'Fidelity Bank',
+            '032': 'Union Bank',
+            '221': 'Stanbic IBTC',
+            '232': 'Sterling Bank',
+            '035': 'Wema Bank'
+          };
+          
+          sessions[userId].step = 4;
+          sessions[userId].accountName = "Account Holder Name";
+          
+          await ctx.reply(
+            `✅ *ACCOUNT RESOLVED*\n\n` +
+            `🔢 *Account Number\\:* ${accountNumber}\n` +
+            `📛 *Account Name\\:* Account Holder Name\n` +
+            `🏦 *Bank\\:* ${escapeMarkdown(session.bankName)}\n\n` +
+            `💰 *Enter amount to transfer\\:*\n\n` +
+            `💸 *Fee\\:* 1\\.5%\n` +
+            `💰 *Min\\:* ${formatCurrency(100)}\n` +
+            `💎 *Max\\:* ${formatCurrency(1000000)}`,
+            { parse_mode: 'MarkdownV2' }
+          );
+          
+        } catch (error) {
+          console.error('❌ Account resolution error:', error);
+          sessions[userId].step = 3;
+          
+          await ctx.reply(
+            `⚠️ *ACCOUNT RESOLUTION ERROR*\n\n` +
+            `🔢 *Account Number\\:* ${accountNumber}\n` +
+            `🏦 *Bank\\:* ${escapeMarkdown(session.bankName)}\n\n` +
+            `📛 *Please enter recipient account name manually\\:*\n\n` +
+            `💡 *Example\\:* John Doe`,
+            { parse_mode: 'MarkdownV2' }
+          );
+        }
+        
+        try {
+          await ctx.telegram.deleteMessage(ctx.chat.id, loadingMsg.message_id);
+        } catch (e) {}
+      }
+      else if (session.step === 3) {
+        session.accountName = text.substring(0, 100);
+        session.step = 4;
+        
+        await ctx.reply(
+          `✅ *Account Name Saved\\:* ${escapeMarkdown(session.accountName)}\n\n` +
+          `💰 *Enter amount to transfer\\:*\n\n` +
+          `💸 *Fee\\:* 1\\.5%\n` +
+          `💰 *Min\\:* ${formatCurrency(100)}\n` +
+          `💎 *Max\\:* ${formatCurrency(1000000)}`,
+          { parse_mode: 'MarkdownV2' }
+        );
+      }
+      else if (session.step === 4) {
+        const amount = parseFloat(text);
+        
+        if (isNaN(amount) || amount < 100 || amount > 1000000) {
+          return await ctx.reply(
+            `❌ *INVALID AMOUNT*\n\n` +
+            `Amount must be between ₦100 and ₦1,000,000\\.\n\n` +
+            `📝 Try again\\:`,
+            { parse_mode: 'MarkdownV2' }
+          );
+        }
+        
+        const fee = (amount * 1.5) / 100;
+        const total = amount + fee;
+        
+        if (user.wallet < total) {
+          delete sessions[userId];
+          return await ctx.reply(
+            `❌ *INSUFFICIENT BALANCE*\n\n` +
+            `💵 Your Balance\\: ${formatCurrency(user.wallet)}\n` +
+            `💰 Required \\(Amount \\+ Fee\\)\\: ${formatCurrency(total)}\n\n` +
+            `💡 You need ${formatCurrency(total - user.wallet)} more\\.`,
+            { parse_mode: 'MarkdownV2' }
+          );
+        }
+        
+        session.step = 5;
+        session.amount = amount;
+        session.fee = fee;
+        session.totalAmount = total;
+        
+        await ctx.reply(
+          `📋 *TRANSFER SUMMARY*\n\n` +
+          `📛 *To\\:* ${escapeMarkdown(session.accountName)}\n` +
+          `🔢 *Account\\:* ${session.accountNumber}\n` +
+          `🏦 *Bank\\:* ${escapeMarkdown(session.bankName)}\n` +
+          `💰 *Amount\\:* ${formatCurrency(session.amount)}\n` +
+          `💸 *Fee\\:* ${formatCurrency(session.fee)}\n` +
+          `💵 *Total Deducted\\:* ${formatCurrency(session.totalAmount)}\n\n` +
+          `🔐 *Enter your 4\\-digit PIN to confirm transfer\\:*`,
+          { parse_mode: 'MarkdownV2' }
+        );
+      }
+      else if (session.step === 5) {
+        if (text !== user.pin) {
+          user.pinAttempts++;
+          
+          if (user.pinAttempts >= 3) {
+            user.pinLocked = true;
+            delete sessions[userId];
+            return await ctx.reply(
+              '❌ *ACCOUNT LOCKED*\n\n' +
+              '🔒 Too many wrong PIN attempts\\.\n\n' +
+              '📞 Contact admin to unlock\\.',
+              { parse_mode: 'MarkdownV2' }
+            );
+          }
+          
+          return await ctx.reply(
+            `❌ *WRONG PIN*\n\n` +
+            `⚠️ Attempts left\\: ${3 - user.pinAttempts}\n\n` +
+            `🔐 Enter correct PIN\\:`,
+            { parse_mode: 'MarkdownV2' }
+          );
+        }
+        
+        user.pinAttempts = 0;
+        
+        const { amount, fee, totalAmount, accountNumber, accountName, bankName } = session;
+        
+        const processingMsg = await ctx.reply(
+          `🔄 *PROCESSING BANK TRANSFER\\.\\.\\.*\n\n` +
+          `⏳ Please wait while we process your transfer\\.\n` +
+          `This may take up to 30 seconds\\.`,
+          { parse_mode: 'MarkdownV2' }
+        );
+        
+        try {
+          user.wallet -= totalAmount;
+          user.dailyTransfer += totalAmount;
+          user.lastTransfer = new Date().toLocaleString();
+          
+          const reference = `BTR${Date.now()}_${userId}`;
+          
+          transactions[userId].push({
+            type: 'bank_transfer',
+            amount: amount,
+            fee: fee,
+            totalAmount: totalAmount,
+            recipientName: accountName,
+            recipientAccount: accountNumber,
+            recipientBank: bankName,
+            reference: reference,
+            status: 'pending',
+            date: new Date().toLocaleString(),
+            note: 'Transfer queued for manual processing by admin'
+          });
+          
+          try {
+            const adminId = CONFIG.ADMIN_ID;
+            await ctx.telegram.sendMessage(
+              adminId,
+              `🏦 *NEW BANK TRANSFER REQUEST*\n\n` +
+              `👤 *User\\:* ${userId}\n` +
+              `📛 *Recipient\\:* ${accountName}\n` +
+              `🔢 *Account\\:* ${accountNumber}\n` +
+              `🏦 *Bank\\:* ${bankName}\n` +
+              `💰 *Amount\\:* ${formatCurrency(amount)}\n` +
+              `💸 *Fee\\:* ${formatCurrency(fee)}\n` +
+              `💵 *Total\\:* ${formatCurrency(totalAmount)}\n` +
+              `🔢 *Reference\\:* ${reference}\n\n` +
+              `⏰ *Time\\:* ${new Date().toLocaleString('en-NG')}`,
+              { parse_mode: 'MarkdownV2' }
+            );
+          } catch (adminError) {
+            console.error('Failed to notify admin:', adminError);
+          }
+          
+          await ctx.reply(
+            `✅ *TRANSFER REQUEST SUBMITTED\\!*\n\n` +
+            `📛 *To\\:* ${escapeMarkdown(accountName)}\n` +
+            `🔢 *Account\\:* ${accountNumber}\n` +
+            `🏦 *Bank\\:* ${escapeMarkdown(bankName)}\n` +
+            `💰 *Amount\\:* ${formatCurrency(amount)}\n` +
+            `💸 *Fee\\:* ${formatCurrency(fee)}\n` +
+            `💵 *Total Deducted\\:* ${formatCurrency(totalAmount)}\n` +
+            `🔢 *Reference\\:* ${reference}\n` +
+            `💳 *New Balance\\:* ${formatCurrency(user.wallet)}\n\n` +
+            `📞 *Status\\:* ⏳ PENDING ADMIN APPROVAL\n\n` +
+            `💡 *Note\\:* Admin will process your transfer within 24 hours\\.\n` +
+            `You will be notified once completed\\.`,
+            {
+              parse_mode: 'MarkdownV2',
+              ...Markup.inlineKeyboard([
+                [Markup.button.callback('📋 Save Receipt', `save_${reference}`)],
+                [Markup.button.callback('🏠 Home', 'start')]
+              ])
+            }
+          );
+          
+        } catch (error) {
+          console.error('❌ Bank transfer error:', error);
+          
+          await ctx.reply(
+            `⚠️ *TRANSFER DELAYED*\n\n` +
+            `💰 *Amount\\:* ${formatCurrency(amount)}\n` +
+            `📛 *To\\:* ${escapeMarkdown(accountName)}\n` +
+            `🔢 *Account\\:* ${accountNumber}\n\n` +
+            `🔄 *Status\\:* Processing \\- Please wait\n\n` +
+            `💡 *Note\\:* Your wallet has NOT been deducted\\.\n` +
+            `If transfer doesn\'t complete, contact admin\\.`,
+            { parse_mode: 'MarkdownV2' }
+          );
+        }
+        
+        try {
+          await ctx.telegram.deleteMessage(ctx.chat.id, processingMsg.message_id);
+        } catch (e) {}
+        
+        delete sessions[userId];
+      }
     }
     
   } catch (error) {
