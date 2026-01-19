@@ -1,14 +1,4 @@
-// Debug: Check environment variables
-console.log('🔍 ENVIRONMENT VARIABLES DEBUG:');
-console.log('BOT_TOKEN:', process.env.BOT_TOKEN ? 'SET' : 'NOT SET');
-console.log('VTU_API_KEY:', process.env.VTU_API_KEY ? 'SET' : 'NOT SET');
-console.log('BILLSTACK_API_KEY:', process.env.BILLSTACK_API_KEY ? 'SET' : 'NOT SET');
-console.log('BILLSTACK_SECRET_KEY:', process.env.BILLSTACK_SECRET_KEY ? 'SET' : 'NOT SET');
-console.log('ADMIN_ID:', process.env.ADMIN_ID || 'NOT SET');
-
-
-
-// index.js - MAIN ENTRY POINT (COMPLETE VERSION)
+// index.js - MAIN ENTRY POINT (UPDATED FOR NEW DEPOSIT MODULE)
 require('dotenv').config();
 const { Telegraf, Markup } = require('telegraf');
 const axios = require('axios');
@@ -35,18 +25,21 @@ const CONFIG = {
   SERVICE_FEE: 100,
   MIN_AIRTIME: 50,
   MAX_AIRTIME: 50000,
-  // BILLSTACK CONFIGURATION (API KEYS - NOT EMAIL/PASSWORD)
+  // BILLSTACK CONFIGURATION
   BILLSTACK_API_KEY: process.env.BILLSTACK_API_KEY,
   BILLSTACK_SECRET_KEY: process.env.BILLSTACK_SECRET_KEY,
-  BILLSTACK_BASE_URL: process.env.BILLSTACK_BASE_URL || 'https://api.billstack.io',
+  BILLSTACK_BASE_URL: process.env.BILLSTACK_BASE_URL || 'https://api.billstack.co',
   BANK_TRANSFER_ENABLED: process.env.BANK_TRANSFER_API_KEY ? true : false
 };
 
 // Global data storage (shared across modules)
 const users = {};
 const transactions = {};
-const sessions = {};
 const virtualAccounts = {};
+
+// Use deposit module's session manager instead of global sessions
+// Get session manager from depositFunds module
+const depositSessionManager = depositFunds.sessionManager;
 
 // Network mapping for VTU API
 const NETWORK_CODES = {
@@ -77,7 +70,6 @@ function initUser(userId) {
       firstName: null,
       lastName: null,
       username: null,
-      // BVN fields removed for Billstack
       virtualAccount: null,
       virtualAccountNumber: null,
       virtualAccountBank: null,
@@ -85,7 +77,6 @@ function initUser(userId) {
       dailyTransfer: 0,
       lastDeposit: null,
       lastTransfer: null,
-      // New KYC fields
       kycSubmittedDate: null,
       kycApprovedDate: isAdminUser ? new Date().toISOString() : null,
       kycRejectedDate: null,
@@ -124,6 +115,10 @@ virtualAccounts.create = async (accountData) => {
     is_active: accountData.is_active !== undefined ? accountData.is_active : true
   };
   
+  // Also store in old format for compatibility
+  users[userId].virtualAccountNumber = accountData.account_number;
+  users[userId].virtualAccountBank = accountData.bank_name;
+  
   return users[userId].virtualAccount;
 };
 
@@ -140,14 +135,9 @@ virtualAccounts.findByAccountNumber = async (accountNumber) => {
   return null;
 };
 
-virtualAccounts.updateLastUsed = async (accountNumber) => {
-  // Update last used timestamp if needed
-  return true;
-};
-
-// Add transaction methods to match deposit module expectations
+// Add transaction methods
 transactions.create = async (txData) => {
-  const userId = txData.telegramId;
+  const userId = txData.user_id || txData.telegramId;
   if (!users[userId]) {
     initUser(userId);
   }
@@ -175,7 +165,7 @@ transactions.findByReference = async (reference) => {
   return null;
 };
 
-// Add user methods to match deposit module expectations
+// Add user methods
 users.creditWallet = async (telegramId, amount) => {
   const user = users[telegramId];
   if (!user) {
@@ -188,6 +178,16 @@ users.creditWallet = async (telegramId, amount) => {
 
 users.findById = async (telegramId) => {
   return users[telegramId] || null;
+};
+
+users.update = async (telegramId, updateData) => {
+  const user = users[telegramId];
+  if (!user) {
+    initUser(telegramId);
+  }
+  
+  Object.assign(users[telegramId], updateData);
+  return users[telegramId];
 };
 
 function isAdmin(userId) {
@@ -260,8 +260,11 @@ function isValidEmail(email) {
 const app = express();
 app.use(express.json());
 
+// Setup deposit handlers first (this registers callbacks)
+depositFunds.setupDepositHandlers(bot, users, virtualAccounts);
+
 // Webhook endpoint - BILLSTACK VERSION
-app.post('/billstack-webhook', depositFunds.handleBillstackWebhook(bot, users, transactions, CONFIG, virtualAccounts));
+app.post('/billstack-webhook', depositFunds.handleBillstackWebhook(bot, users, transactions, virtualAccounts));
 
 const WEBHOOK_PORT = process.env.PORT || 3000;
 app.listen(WEBHOOK_PORT, () => {
@@ -367,11 +370,12 @@ bot.hears('📡 Buy Data', (ctx) => buyData.handleData(ctx, users, sessions, CON
 // Wallet Balance
 bot.hears('💰 Wallet Balance', (ctx) => walletBalance.handleWallet(ctx, users, CONFIG));
 
-// Deposit Funds - UPDATED WITH SESSIONS PARAMETER
+// Deposit Funds - USING NEW MODULE
 bot.hears('💳 Deposit Funds', (ctx) => {
   const userId = ctx.from.id.toString();
   const user = initUser(userId);
-  return depositFunds.handleDeposit(ctx, users, virtualAccounts, CONFIG, sessions, bot);
+  // Use the new deposit module with proper session management
+  return depositFunds.handleDeposit(ctx, users, virtualAccounts);
 });
 
 // Money Transfer
@@ -417,13 +421,9 @@ bot.hears('🏦 Money Transfer', async (ctx) => {
       );
     }
     
-    sessions[userId] = {
-      action: 'bank_transfer',
-      step: 1,
-      userId: userId
-    };
+    // Use deposit module's session manager
+    depositSessionManager.startSession(userId, 'bank_transfer');
     
-    // Get banks
     const banks = [
       { name: "Access Bank", code: "044" },
       { name: "First Bank", code: "011" },
@@ -437,7 +437,6 @@ bot.hears('🏦 Money Transfer', async (ctx) => {
       { name: "Wema Bank", code: "035" }
     ];
     
-    // Create buttons
     const bankButtons = [];
     for (let i = 0; i < banks.length; i += 2) {
       const row = [];
@@ -602,452 +601,50 @@ Object.keys(adminCommands).forEach(command => {
   bot.command(command, adminCommands[command]);
 });
 
-// ==================== CALLBACK HANDLERS ====================
-
-console.log('\n📋 REGISTERING CALLBACKS:');
-
-// Check if modules have getCallbacks function, if not create fallbacks
-function getModuleCallbacks(module, moduleName, ...args) {
-  if (module && typeof module.getCallbacks === 'function') {
-    console.log(`   ✅ ${moduleName}: Using module.getCallbacks()`);
-    return module.getCallbacks(...args);
-  } else {
-    console.log(`   ⚠️ ${moduleName}: No getCallbacks, using fallback`);
-    // Return empty object if no callbacks
-    return {};
-  }
-}
-
-// Get callbacks from modules
-const airtimeCallbacks = getModuleCallbacks(buyAirtime, 'Airtime', bot, users, sessions, CONFIG, NETWORK_CODES);
-const dataCallbacks = getModuleCallbacks(buyData, 'Data', bot, users, sessions, CONFIG);
-const adminCallbacks = getModuleCallbacks(admin, 'Admin', bot, users, transactions, CONFIG);
-const kycCallbacks = getModuleCallbacks(kyc, 'KYC', bot, users);
-
-// For deposit, we need to handle it differently since it doesn't have getCallbacks
-console.log(`   ℹ️ Deposit: Using direct registration`);
-
-// Register Airtime callbacks
-if (Object.keys(airtimeCallbacks).length > 0) {
-  Object.entries(airtimeCallbacks).forEach(([pattern, handler]) => {
-    console.log(`   📞 Airtime callback: ${pattern}`);
-    if (pattern.includes('(') || pattern.includes('.') || pattern.includes('+') || pattern.includes('*')) {
-      bot.action(new RegExp(`^${pattern}$`), handler);
-    } else {
-      bot.action(pattern, handler);
-    }
-  });
-}
-
-// Register Data callbacks
-if (Object.keys(dataCallbacks).length > 0) {
-  Object.entries(dataCallbacks).forEach(([pattern, handler]) => {
-    console.log(`   📡 Data callback: ${pattern}`);
-    
-    if (pattern === '^validity_(.+)_(.+)$' || pattern === '^plan_(.+)_(.+)_(.+)$') {
-      bot.action(new RegExp(pattern), handler);
-    } else if (pattern.includes('(') || pattern.includes('.') || pattern.includes('+') || pattern.includes('*')) {
-      bot.action(new RegExp(`^${pattern}$`), handler);
-    } else {
-      bot.action(pattern, handler);
-    }
-  });
-}
-
-// Register Admin callbacks
-if (Object.keys(adminCallbacks).length > 0) {
-  Object.entries(adminCallbacks).forEach(([pattern, handler]) => {
-    console.log(`   🛠️ Admin callback: ${pattern}`);
-    if (pattern.includes('(') || pattern.includes('.') || pattern.includes('+') || pattern.includes('*')) {
-      bot.action(new RegExp(`^${pattern}$`), handler);
-    } else {
-      bot.action(pattern, handler);
-    }
-  });
-}
-
-// Register KYC callbacks
-if (Object.keys(kycCallbacks).length > 0) {
-  Object.entries(kycCallbacks).forEach(([pattern, handler]) => {
-    console.log(`   🛂 KYC callback: ${pattern}`);
-    if (pattern.includes('(') || pattern.includes('.') || pattern.includes('+') || pattern.includes('*')) {
-      bot.action(new RegExp(`^${pattern}$`), handler);
-    } else {
-      bot.action(pattern, handler);
-    }
-  });
-}
-
-// ==================== DEPOSIT CALLBACKS (ADDED) ====================
-// Register deposit-related callbacks from depositFunds module
-bot.action('create_billstack_account', (ctx) => 
-  depositFunds.handleCreateBillstackAccount(ctx, users, virtualAccounts, CONFIG, sessions, bot)
-);
-
-bot.action('manual_deposit', (ctx) => 
-  depositFunds.handleManualDeposit(ctx)
-);
-
-bot.action('contact_admin', (ctx) => 
-  depositFunds.handleContactAdmin(ctx)
-);
-
-bot.action('update_email_back', (ctx) => 
-  depositFunds.handleUpdateEmailBack(ctx)
-);
-
-bot.action('refresh_virtual_account', (ctx) => 
-  depositFunds.handleRefreshVirtualAccount(ctx, users, virtualAccounts)
-);
-
-bot.action('try_virtual_account', (ctx) => 
-  depositFunds.handleCreateBillstackAccount(ctx, users, virtualAccounts, CONFIG, sessions, bot)
-);
-
-// Register existing deposit callbacks
-bot.action(/^deposit_email_confirm$/, async (ctx) => {
-  try {
-    const userId = ctx.from.id.toString();
-    const session = sessions[userId];
-    const user = users[userId];
-    
-    if (!session || session.action !== 'update_email') {
-      return ctx.answerCbQuery('Session expired. Start over.');
-    }
-    
-    if (!user) {
-      return ctx.answerCbQuery('User not found.');
-    }
-    
-    if (session.step === 3 && session.newEmail && isValidEmail(session.newEmail)) {
-      user.email = session.newEmail;
-      delete sessions[userId];
-      
-      await ctx.editMessageText(
-        `✅ *EMAIL UPDATED SUCCESSFULLY\\!*\n\n` +
-        `📧 *New Email\\:* ${escapeMarkdown(session.newEmail)}\n\n` +
-        `💡 *Next Steps\\:*\n` +
-        `1\\. KYC must be approved\n` +
-        `2\\. Use "💳 Deposit Funds" to create virtual account\n` +
-        `3\\. Transfer money to your virtual account\n\n` +
-        `🏦 *Supported Banks\\:* WEMA BANK`,
-        {
-          parse_mode: 'MarkdownV2',
-          ...Markup.inlineKeyboard([
-            [Markup.button.callback('💳 Create Virtual Account', 'create_virtual_account')],
-            [Markup.button.callback('🏠 Home', 'start')]
-          ])
-        }
-      );
-      
-      ctx.answerCbQuery();
-    } else {
-      ctx.answerCbQuery('❌ Invalid email data');
-    }
-    
-  } catch (error) {
-    console.error('❌ Deposit email confirm error:', error);
-    ctx.answerCbQuery('❌ Error occurred');
-  }
-});
-
-bot.action(/^deposit_email_cancel$/, async (ctx) => {
-  try {
-    const userId = ctx.from.id.toString();
-    delete sessions[userId];
-    
-    await ctx.editMessageText(
-      `❌ *EMAIL UPDATE CANCELLED*\n\n` +
-      `Your email was not changed\\.\n\n` +
-      `💡 *To set email\\:*\n` +
-      `Use "💳 Deposit Funds" button again\\.`,
-      {
-        parse_mode: 'MarkdownV2',
-        ...Markup.inlineKeyboard([
-          [Markup.button.callback('🏠 Home', 'start')]
-        ])
-      }
-    );
-    
-    ctx.answerCbQuery();
-    
-  } catch (error) {
-    console.error('❌ Deposit email cancel error:', error);
-    ctx.answerCbQuery('❌ Error occurred');
-  }
-});
-
-bot.action(/^create_virtual_account$/, async (ctx) => {
-  try {
-    const userId = ctx.from.id.toString();
-    const user = users[userId];
-    
-    if (!user) {
-      return ctx.answerCbQuery('User not found. Please /start first.');
-    }
-    
-    // Call the deposit function directly
-    await depositFunds.handleDeposit(ctx, users, virtualAccounts, CONFIG, sessions, bot);
-    
-    ctx.answerCbQuery();
-    
-  } catch (error) {
-    console.error('❌ Create virtual account error:', error);
-    ctx.answerCbQuery('❌ Error occurred');
-  }
-});
-
-// Keep all your existing callback handlers for bank transfer, start, etc.
-bot.action(/^bank_(.+)$/, async (ctx) => {
-  try {
-    const userId = ctx.from.id.toString();
-    const bankCode = ctx.match[1];
-    const session = sessions[userId];
-    
-    if (!session || session.action !== 'bank_transfer' || session.step !== 1) {
-      return ctx.answerCbQuery('Session expired. Start over.');
-    }
-    
-    const bankMap = {
-      '044': 'Access Bank',
-      '011': 'First Bank',
-      '058': 'GTBank',
-      '033': 'UBA',
-      '057': 'Zenith Bank',
-      '070': 'Fidelity Bank',
-      '032': 'Union Bank',
-      '221': 'Stanbic IBTC',
-      '232': 'Sterling Bank',
-      '035': 'Wema Bank'
-    };
-    
-    const bankName = bankMap[bankCode] || 'Unknown Bank';
-    
-    sessions[userId].step = 2;
-    sessions[userId].bankCode = bankCode;
-    sessions[userId].bankName = bankName;
-    
-    await ctx.editMessageText(
-      `✅ *Bank Selected\\:* ${escapeMarkdown(bankName)}\n\n` +
-      `🔢 *Enter recipient account number \\(10 digits\\)\\:*\n\n` +
-      `📝 *Example\\:* 1234567890\n\n` +
-      `💡 *Note\\:* Account name will be fetched automatically\\.`,
-      {
-        parse_mode: 'MarkdownV2',
-        ...Markup.inlineKeyboard([
-          [Markup.button.callback('⬅️ Back to Banks', 'bank_transfer_start')]
-        ])
-      }
-    );
-    
-    ctx.answerCbQuery();
-    
-  } catch (error) {
-    console.error('❌ Bank selection error:', error);
-    ctx.answerCbQuery('❌ Error occurred');
-  }
-});
-
-bot.action('bank_transfer_start', async (ctx) => {
-  try {
-    const userId = ctx.from.id.toString();
-    const user = initUser(userId);
-    
-    sessions[userId] = {
-      action: 'bank_transfer',
-      step: 1,
-      userId: userId
-    };
-    
-    const banks = [
-      { name: "Access Bank", code: "044" },
-      { name: "First Bank", code: "011" },
-      { name: "GTBank", code: "058" },
-      { name: "UBA", code: "033" },
-      { name: "Zenith Bank", code: "057" },
-      { name: "Fidelity Bank", code: "070" },
-      { name: "Union Bank", code: "032" },
-      { name: "Stanbic IBTC", code: "221" },
-      { name: "Sterling Bank", code: "232" },
-      { name: "Wema Bank", code: "035" }
-    ];
-    
-    const bankButtons = [];
-    for (let i = 0; i < banks.length; i += 2) {
-      const row = [];
-      row.push(Markup.button.callback(`🏦 ${banks[i].name}`, `bank_${banks[i].code}`));
-      if (banks[i + 1]) {
-        row.push(Markup.button.callback(`🏦 ${banks[i + 1].name}`, `bank_${banks[i + 1].code}`));
-      }
-      bankButtons.push(row);
-    }
-    
-    bankButtons.push([Markup.button.callback('⬅️ Cancel', 'start')]);
-    
-    await ctx.editMessageText(
-      `🏦 *TRANSFER TO BANK ACCOUNT*\n\n` +
-      `💵 *Your Balance\\:* ${formatCurrency(user.wallet)}\n` +
-      `💸 *Transfer Fee\\:* 1\\.5%\n` +
-      `💰 *Min\\:* ${formatCurrency(100)} \\| *Max\\:* ${formatCurrency(1000000)}\n\n` +
-      `📋 *Select Bank\\:*`,
-      {
-        parse_mode: 'MarkdownV2',
-        ...Markup.inlineKeyboard(bankButtons)
-      }
-    );
-    
-    ctx.answerCbQuery();
-    
-  } catch (error) {
-    console.error('❌ Bank transfer start error:', error);
-    ctx.answerCbQuery('❌ Error occurred');
-  }
-});
-
-bot.action('start', async (ctx) => {
-  try {
-    const userId = ctx.from.id.toString();
-    const user = initUser(userId);
-    const isUserAdmin = isAdmin(userId);
-    
-    let keyboard;
-    
-    if (isUserAdmin) {
-      keyboard = [
-        ['📞 Buy Airtime', '📡 Buy Data'],
-        ['💰 Wallet Balance', '💳 Deposit Funds'],
-        ['🏦 Money Transfer', '📜 Transaction History'],
-        ['🛂 KYC Status', '🛠️ Admin Panel'],
-        ['🆘 Help & Support']
-      ];
-    } else {
-      keyboard = [
-        ['📞 Buy Airtime', '📡 Buy Data'],
-        ['💰 Wallet Balance', '💳 Deposit Funds'],
-        ['🏦 Money Transfer', '📜 Transaction History'],
-        ['🛂 KYC Status', '🆘 Help & Support']
-      ];
-    }
-    
-    // Check email and virtual account status for Billstack
-    let emailStatus = '';
-    let virtualAccountStatus = '';
-    
-    // Check if Billstack API is configured
-    const billstackConfigured = CONFIG.BILLSTACK_API_KEY && CONFIG.BILLSTACK_SECRET_KEY;
-    
-    if (billstackConfigured) {
-      if (!user.email || !isValidEmail(user.email)) {
-        emailStatus = `\n📧 *Email Status\\:* ❌ NOT SET\n` +
-          `_Set email via deposit process for virtual account_`;
-      } else {
-        emailStatus = `\n📧 *Email Status\\:* ✅ SET`;
-      }
-      
-      if (!user.virtualAccount) {
-        virtualAccountStatus = `\n💳 *Virtual Account\\:* ❌ NOT CREATED\n` +
-          `_Create virtual account via deposit process_`;
-      } else {
-        virtualAccountStatus = `\n💳 *Virtual Account\\:* ✅ ACTIVE`;
-      }
-    } else {
-      // Billstack not configured yet
-      emailStatus = `\n📧 *Email Status\\:* ${user.email ? '✅ SET' : '❌ NOT SET'}`;
-      virtualAccountStatus = `\n💳 *Virtual Account\\:* ⏳ CONFIG PENDING\n` +
-        `_Admin configuring Billstack API_`;
-    }
-    
-    await ctx.editMessageText(
-      `🌟 *Welcome to Liteway VTU Bot\\!*\n\n` +
-      `⚡ *Quick Start\\:*\n` +
-      `1\\. Set PIN\\: /setpin 1234\n` +
-      `2\\. Get KYC approved\n` +
-      `3\\. Set email for virtual account\n` +
-      `4\\. Deposit funds\n` +
-      `5\\. Start buying\\!\n\n` +
-      `📱 *Services\\:*\n` +
-      `• 📞 Airtime \\(All networks\\)\n` +
-      `• 📡 Data bundles\n` +
-      `• 💰 Wallet system\n` +
-      `• 💳 Deposit via Virtual Account\n` +
-      `• 🏦 Transfer to any bank\n\n` +
-      `${emailStatus}` +
-      `${virtualAccountStatus}\n\n` +
-      `📞 *Support\\:* @opuenekeke`,
-      {
-        parse_mode: 'MarkdownV2',
-        ...Markup.keyboard(keyboard).resize()
-      }
-    );
-    
-    ctx.answerCbQuery();
-    
-  } catch (error) {
-    console.error('❌ Start callback error:', error);
-  }
-});
-
 // ==================== TEXT MESSAGE HANDLER ====================
 bot.on('text', async (ctx) => {
   try {
     const userId = ctx.from.id.toString();
     const text = ctx.message.text.trim();
-    const session = sessions[userId];
+    
+    // Initialize user if not exists
     const user = initUser(userId);
     
-    if (!session) return;
-    
-    // Import text handlers from modules
-    const airtimeTextHandler = require('./app/buyAirtime').handleText;
-    const dataTextHandler = require('./app/buyData').handleText;
-    const depositTextHandler = require('./app/depositFunds').handleText;
-    
-    // Handle airtime text
-    if (session.action === 'airtime') {
-      await airtimeTextHandler(ctx, text, session, user, users, transactions, sessions, NETWORK_CODES, CONFIG);
+    // First, check if this is a deposit-related text
+    // Use the deposit module's text handler
+    const handled = await depositFunds.handleDepositText(ctx, text, users, virtualAccounts, bot);
+    if (handled) {
+      return;
     }
     
-    // Handle data text
-    else if (session.action === 'data') {
-      await dataTextHandler(ctx, text, session, user, users, transactions, sessions, NETWORK_CODES, CONFIG);
-    }
+    // Check for old session system (for compatibility)
+    const oldSession = global.sessions && global.sessions[userId];
     
-    // Handle deposit text (email updates only)
-    else if (session.action === 'update_email') {
-      // Use deposit module's handleText if available, otherwise use fallback
-      if (depositTextHandler) {
-        await depositTextHandler(ctx, text, session, user, users, transactions, sessions, CONFIG);
-      } else {
-        // Fallback email handler
-        if (session.step === 1) {
-          if (!isValidEmail(text)) {
-            return await ctx.reply(
-              '❌ Invalid email format. Please enter a valid email (e.g., user@example.com):'
-            );
-          }
-          
-          user.email = text;
-          delete sessions[userId];
-          
-          await ctx.reply(
-            `✅ Email saved: ${text}\n\n` +
-            `Now you can create a virtual account.\n\n` +
-            `Click the button below to create your virtual account:`,
-            {
-              parse_mode: 'Markdown',
-              ...Markup.inlineKeyboard([
-                [Markup.button.callback('💳 Create Virtual Account', 'create_virtual_account')],
-                [Markup.button.callback('🏠 Home', 'start')]
-              ])
-            }
-          );
-        }
+    // Handle old session system for other modules
+    if (oldSession) {
+      // Import text handlers from modules
+      const airtimeTextHandler = require('./app/buyAirtime').handleText;
+      const dataTextHandler = require('./app/buyData').handleText;
+      
+      // Handle airtime text
+      if (oldSession.action === 'airtime') {
+        await airtimeTextHandler(ctx, text, oldSession, user, users, transactions, global.sessions, NETWORK_CODES, CONFIG);
+        return;
+      }
+      
+      // Handle data text
+      else if (oldSession.action === 'data') {
+        await dataTextHandler(ctx, text, oldSession, user, users, transactions, global.sessions, NETWORK_CODES, CONFIG);
+        return;
       }
     }
     
-    // BANK TRANSFER handlers
-    else if (session.action === 'bank_transfer') {
-      if (session.step === 2) {
+    // Check deposit module session
+    const depositSession = depositSessionManager.getSession(userId);
+    
+    // Handle bank transfer (using deposit module's session manager)
+    if (depositSession && depositSession.action === 'bank_transfer') {
+      if (depositSession.step === 2) {
         const accountNumber = text.replace(/\s+/g, '');
         
         if (!/^\d{10}$/.test(accountNumber)) {
@@ -1059,38 +656,29 @@ bot.on('text', async (ctx) => {
           );
         }
         
-        sessions[userId].accountNumber = accountNumber;
+        depositSessionManager.updateStep(userId, 3, { accountNumber: accountNumber });
         
         const loadingMsg = await ctx.reply(
           `🔄 *Resolving account details\\.\\.\\.*\n\n` +
           `🔢 *Account Number\\:* ${accountNumber}\n` +
-          `🏦 *Bank\\:* ${escapeMarkdown(session.bankName)}\n\n` +
+          `🏦 *Bank\\:* ${escapeMarkdown(depositSession.bankName)}\n\n` +
           `⏳ Please wait while we fetch account name\\.\\.\\.`,
           { parse_mode: 'MarkdownV2' }
         );
         
         try {
-          const bankMap = {
-            '044': 'Access Bank',
-            '011': 'First Bank',
-            '058': 'GTBank',
-            '033': 'UBA',
-            '057': 'Zenith Bank',
-            '070': 'Fidelity Bank',
-            '032': 'Union Bank',
-            '221': 'Stanbic IBTC',
-            '232': 'Sterling Bank',
-            '035': 'Wema Bank'
-          };
+          // Simulate API call for account resolution
+          await new Promise(resolve => setTimeout(resolve, 2000));
           
-          sessions[userId].step = 4;
-          sessions[userId].accountName = "Account Holder Name";
+          depositSessionManager.updateStep(userId, 4, { 
+            accountName: "Account Holder Name" 
+          });
           
           await ctx.reply(
             `✅ *ACCOUNT RESOLVED*\n\n` +
             `🔢 *Account Number\\:* ${accountNumber}\n` +
             `📛 *Account Name\\:* Account Holder Name\n` +
-            `🏦 *Bank\\:* ${escapeMarkdown(session.bankName)}\n\n` +
+            `🏦 *Bank\\:* ${escapeMarkdown(depositSession.bankName)}\n\n` +
             `💰 *Enter amount to transfer\\:*\n\n` +
             `💸 *Fee\\:* 1\\.5%\n` +
             `💰 *Min\\:* ${formatCurrency(100)}\n` +
@@ -1100,12 +688,12 @@ bot.on('text', async (ctx) => {
           
         } catch (error) {
           console.error('❌ Account resolution error:', error);
-          sessions[userId].step = 3;
+          depositSessionManager.updateStep(userId, 3);
           
           await ctx.reply(
             `⚠️ *ACCOUNT RESOLUTION ERROR*\n\n` +
             `🔢 *Account Number\\:* ${accountNumber}\n` +
-            `🏦 *Bank\\:* ${escapeMarkdown(session.bankName)}\n\n` +
+            `🏦 *Bank\\:* ${escapeMarkdown(depositSession.bankName)}\n\n` +
             `📛 *Please enter recipient account name manually\\:*\n\n` +
             `💡 *Example\\:* John Doe`,
             { parse_mode: 'MarkdownV2' }
@@ -1115,21 +703,23 @@ bot.on('text', async (ctx) => {
         try {
           await ctx.telegram.deleteMessage(ctx.chat.id, loadingMsg.message_id);
         } catch (e) {}
+        return;
       }
-      else if (session.step === 3) {
-        session.accountName = text.substring(0, 100);
-        session.step = 4;
+      else if (depositSession.step === 3) {
+        const accountName = text.substring(0, 100);
+        depositSessionManager.updateStep(userId, 4, { accountName: accountName });
         
         await ctx.reply(
-          `✅ *Account Name Saved\\:* ${escapeMarkdown(session.accountName)}\n\n` +
+          `✅ *Account Name Saved\\:* ${escapeMarkdown(accountName)}\n\n` +
           `💰 *Enter amount to transfer\\:*\n\n` +
           `💸 *Fee\\:* 1\\.5%\n` +
           `💰 *Min\\:* ${formatCurrency(100)}\n` +
           `💎 *Max\\:* ${formatCurrency(1000000)}`,
           { parse_mode: 'MarkdownV2' }
         );
+        return;
       }
-      else if (session.step === 4) {
+      else if (depositSession.step === 4) {
         const amount = parseFloat(text);
         
         if (isNaN(amount) || amount < 100 || amount > 1000000) {
@@ -1145,7 +735,7 @@ bot.on('text', async (ctx) => {
         const total = amount + fee;
         
         if (user.wallet < total) {
-          delete sessions[userId];
+          depositSessionManager.clearSession(userId);
           return await ctx.reply(
             `❌ *INSUFFICIENT BALANCE*\n\n` +
             `💵 Your Balance\\: ${formatCurrency(user.wallet)}\n` +
@@ -1155,30 +745,32 @@ bot.on('text', async (ctx) => {
           );
         }
         
-        session.step = 5;
-        session.amount = amount;
-        session.fee = fee;
-        session.totalAmount = total;
+        depositSessionManager.updateStep(userId, 5, {
+          amount: amount,
+          fee: fee,
+          totalAmount: total
+        });
         
         await ctx.reply(
           `📋 *TRANSFER SUMMARY*\n\n` +
-          `📛 *To\\:* ${escapeMarkdown(session.accountName)}\n` +
-          `🔢 *Account\\:* ${session.accountNumber}\n` +
-          `🏦 *Bank\\:* ${escapeMarkdown(session.bankName)}\n` +
-          `💰 *Amount\\:* ${formatCurrency(session.amount)}\n` +
-          `💸 *Fee\\:* ${formatCurrency(session.fee)}\n` +
-          `💵 *Total Deducted\\:* ${formatCurrency(session.totalAmount)}\n\n` +
+          `📛 *To\\:* ${escapeMarkdown(depositSession.accountName)}\n` +
+          `🔢 *Account\\:* ${depositSession.accountNumber}\n` +
+          `🏦 *Bank\\:* ${escapeMarkdown(depositSession.bankName)}\n` +
+          `💰 *Amount\\:* ${formatCurrency(amount)}\n` +
+          `💸 *Fee\\:* ${formatCurrency(fee)}\n` +
+          `💵 *Total Deducted\\:* ${formatCurrency(total)}\n\n` +
           `🔐 *Enter your 4\\-digit PIN to confirm transfer\\:*`,
           { parse_mode: 'MarkdownV2' }
         );
+        return;
       }
-      else if (session.step === 5) {
+      else if (depositSession.step === 5) {
         if (text !== user.pin) {
           user.pinAttempts++;
           
           if (user.pinAttempts >= 3) {
             user.pinLocked = true;
-            delete sessions[userId];
+            depositSessionManager.clearSession(userId);
             return await ctx.reply(
               '❌ *ACCOUNT LOCKED*\n\n' +
               '🔒 Too many wrong PIN attempts\\.\n\n' +
@@ -1197,7 +789,7 @@ bot.on('text', async (ctx) => {
         
         user.pinAttempts = 0;
         
-        const { amount, fee, totalAmount, accountNumber, accountName, bankName } = session;
+        const { amount, fee, totalAmount, accountNumber, accountName, bankName } = depositSession;
         
         const processingMsg = await ctx.reply(
           `🔄 *PROCESSING BANK TRANSFER\\.\\.\\.*\n\n` +
@@ -1288,7 +880,8 @@ bot.on('text', async (ctx) => {
           await ctx.telegram.deleteMessage(ctx.chat.id, processingMsg.message_id);
         } catch (e) {}
         
-        delete sessions[userId];
+        depositSessionManager.clearSession(userId);
+        return;
       }
     }
     
