@@ -367,6 +367,9 @@ async function handleDeposit(ctx, users, virtualAccounts, CONFIG, sessions, bot)
 
     // Email check
     if (!user.email) {
+      // Import Markup inline to avoid dependency issues
+      const { Markup } = require('telegraf');
+      
       // Start email collection process
       session.action = 'update_email';
       session.step = 1;
@@ -388,6 +391,9 @@ async function handleDeposit(ctx, users, virtualAccounts, CONFIG, sessions, bot)
     let virtualAccount = await virtualAccounts.findByUserId(telegramId);
     
     if (!virtualAccount || !virtualAccount.is_active) {
+      // Import Markup inline for this section
+      const { Markup } = require('telegraf');
+      
       // Create new virtual account
       await ctx.reply('🔄 Creating your deposit account... Please wait.');
       
@@ -456,6 +462,9 @@ async function handleDeposit(ctx, users, virtualAccounts, CONFIG, sessions, bot)
         return ctx.reply(errorMessage);
       }
     } else {
+      // Import Markup inline for this section
+      const { Markup } = require('telegraf');
+      
       // Show existing account
       const accountMessage = 
         `💰 *Your Deposit Account*\n\n` +
@@ -674,6 +683,9 @@ async function handleText(ctx, text, session, user, users, transactions, session
   if (session.action === 'update_email') {
     if (session.step === 1) {
       const email = text.trim();
+      
+      // Import Markup inline
+      const { Markup } = require('telegraf');
       
       // Validate email
       const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
