@@ -126,29 +126,28 @@ function formatAmount(amount) {
 }
 
 function formatPhoneNumber(phone) {
-  let cleaned = phone.replace(/\s+/g, '');
+  if (!phone) return '2348000000000';
   
-  // Convert to Nigerian format: 234xxxxxxxxxx
-  if (cleaned.startsWith('0')) {
-    cleaned = '234' + cleaned.substring(1);
-  } else if (cleaned.startsWith('+234')) {
-    cleaned = cleaned.substring(1);
-  } else if (cleaned.startsWith('234')) {
+  // Remove all non-digits
+  let cleaned = phone.replace(/\D/g, '');
+  
+  // Handle different formats
+  if (cleaned.length === 11 && cleaned.startsWith('0')) {
+    // 08012345678 -> 2348012345678
+    return '234' + cleaned.substring(1);
+  } else if (cleaned.length === 13 && cleaned.startsWith('234')) {
     // Already in correct format
-  } else {
-    // Assume it's already in correct format or add 234
-    if (cleaned.length === 10) {
-      cleaned = '234' + cleaned;
-    }
-  }
-  
-  // Ensure it's exactly 13 digits (234 + 10 digits)
-  if (cleaned.length === 13 && cleaned.startsWith('234')) {
     return cleaned;
+  } else if (cleaned.length === 10) {
+    // 8012345678 -> 2348012345678
+    return '234' + cleaned;
+  } else if (cleaned.length > 13) {
+    // Take first 13 digits if too long
+    return cleaned.substring(0, 13);
   }
   
-  // Return as-is if can't format properly
-  return phone.replace(/\s+/g, '');
+  // Default fallback
+  return '2348000000000';
 }
 
 function validateWebhookSignature(payload, signature, secret) {
@@ -183,7 +182,7 @@ async function createVirtualAccountForUser(user) {
     if (user.phone) {
       formattedPhone = formatPhoneNumber(user.phone);
     } else {
-      // Use a placeholder if no phone (though Billstack requires phone)
+      // Use a placeholder if no phone
       formattedPhone = '2348000000000';
     }
     
@@ -260,7 +259,7 @@ async function createVirtualAccountForUser(user) {
       if (error.response.status === 401) {
         throw new Error('Invalid Billstack API key. Please contact admin.');
       } else if (error.response.status === 400) {
-        throw new Error('Invalid request data. Please check your email format.');
+        throw new Error('Invalid request data. Please check your email or phone format.');
       } else if (error.response.status === 500) {
         throw new Error('Billstack service error. Please try again later.');
       }
@@ -419,7 +418,7 @@ async function handleDeposit(ctx, users, virtualAccounts, CONFIG, sessions, bot)
 }
 
 /* =====================================================
-   3️⃣ TEXT HANDLER FOR EMAIL/PHONE UPDATES
+   3️⃣ TEXT HANDLER FOR EMAIL/PHONE UPDATES (FIXED VERSION)
 ===================================================== */
 async function handleText(ctx, text, session, user, users, transactions, sessions, CONFIG) {
   const { Markup } = require('telegraf');
@@ -448,7 +447,7 @@ async function handleText(ctx, text, session, user, users, transactions, session
       await ctx.reply(
         `✅ Email saved: ${email}\n\n` +
         `Now please enter your phone number:\n` +
-        `📝 Format: 08012345678`,
+        `📝 Format: 08012345678 or +2348012345678`,
         {
           parse_mode: 'Markdown',
           ...Markup.inlineKeyboard([
@@ -462,23 +461,43 @@ async function handleText(ctx, text, session, user, users, transactions, session
     if (session.step === 1) {
       const phone = text.trim();
       
-      // Validate phone (simple validation)
-      const phoneRegex = /^(0|234)\d{10}$/;
-      let formattedPhone = phone;
+      // SIMPLIFIED PHONE VALIDATION
+      // Remove all non-digits
+      let cleanedPhone = phone.replace(/\D/g, '');
       
-      if (phone.startsWith('0') && phone.length === 11) {
-        formattedPhone = '234' + phone.substring(1);
+      // Check if it's a valid Nigerian phone number
+      let isValid = false;
+      
+      if (cleanedPhone.length === 11 && cleanedPhone.startsWith('0')) {
+        // Format: 08012345678
+        isValid = true;
+      } else if (cleanedPhone.length === 13 && cleanedPhone.startsWith('234')) {
+        // Format: 2348012345678
+        isValid = true;
+      } else if (cleanedPhone.length === 14 && cleanedPhone.startsWith('234')) {
+        // Sometimes might have extra digit, take first 13
+        cleanedPhone = cleanedPhone.substring(0, 13);
+        isValid = true;
+      } else if (cleanedPhone.length === 10) {
+        // Format: 8012345678 (without leading 0)
+        cleanedPhone = '234' + cleanedPhone;
+        isValid = true;
       }
       
-      if (!/^234\d{10}$/.test(formattedPhone)) {
+      if (!isValid) {
         return await ctx.reply(
           '❌ Invalid phone number.\n\n' +
-          'Please enter a valid Nigerian phone number (e.g., 08012345678):'
+          'Please enter a valid Nigerian phone number:\n' +
+          '• 08012345678\n' +
+          '• 2348012345678\n' +
+          '• +2348012345678\n\n' +
+          '📝 Try again:'
         );
       }
       
       // Save phone
       user.phone = phone;
+      
       delete sessions[ctx.from.id.toString()];
       
       await ctx.reply(
@@ -720,7 +739,7 @@ async function handleRefreshVirtualAccount(ctx, users, virtualAccounts) {
       { parse_mode: 'Markdown' }
     );
     
-    // Simulate refresh (in a real scenario, you might query Billstack API)
+    // Simulate refresh
     await new Promise(resolve => setTimeout(resolve, 2000));
     
     const accountMessage = 
