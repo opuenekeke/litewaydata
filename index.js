@@ -25,12 +25,11 @@ const CONFIG = {
   SERVICE_FEE: 100,
   MIN_AIRTIME: 50,
   MAX_AIRTIME: 50000,
-  MONNIFY_ENABLED: process.env.MONNIFY_API_KEY ? true : false,
-  MONNIFY_API_KEY: process.env.MONNIFY_API_KEY,
-  MONNIFY_SECRET_KEY: process.env.MONNIFY_SECRET_KEY,
-  MONNIFY_CONTRACT_CODE: process.env.MONNIFY_CONTRACT_CODE,
-  MONNIFY_BASE_URL: process.env.MONNIFY_BASE_URL || 'https://sandbox.monnify.com',
-  MONNIFY_WEBHOOK_SECRET: process.env.MONNIFY_WEBHOOK_SECRET,
+  // BILLSTACK CONFIGURATION (NO BVN REQUIRED)
+  BILLSTACK_ENABLED: process.env.BILLSTACK_EMAIL ? true : false,
+  BILLSTACK_EMAIL: process.env.BILLSTACK_EMAIL,
+  BILLSTACK_PASSWORD: process.env.BILLSTACK_PASSWORD,
+  BILLSTACK_BASE_URL: process.env.BILLSTACK_BASE_URL || 'https://api.billstack.io',
   BANK_TRANSFER_ENABLED: process.env.BANK_TRANSFER_API_KEY ? true : false
 };
 
@@ -64,11 +63,7 @@ function initUser(userId) {
       email: null,
       phone: null,
       fullName: null,
-      bvn: null,
-      bvnVerified: false,
-      bvnSubmittedAt: null,
-      bvnVerifiedAt: null,
-      bvnVerifiedBy: null,
+      // BVN fields removed for Billstack
       virtualAccount: null,
       virtualAccountNumber: null,
       virtualAccountBank: null,
@@ -141,17 +136,11 @@ function validatePhoneNumber(phone) {
   return /^(0|234)(7|8|9)(0|1)\d{8}$/.test(cleaned);
 }
 
-function maskBVN(bvn) {
-  if (!bvn || bvn.length !== 11) return 'Invalid BVN';
-  return `${bvn.substring(0, 3)}*****${bvn.substring(8)}`;
-}
-
 // ==================== WEBHOOK SETUP ====================
 const app = express();
 app.use(express.json());
 
-// Webhook endpoint
-
+// Webhook endpoint - BILLSTACK VERSION
 app.post('/billstack-webhook', depositFunds.handleBillstackWebhook(bot, users, transactions, CONFIG, virtualAccounts));
 
 const WEBHOOK_PORT = process.env.PORT || 3000;
@@ -190,11 +179,11 @@ bot.start(async (ctx) => {
       ];
     }
     
-    // Check BVN and email status
-    let bvnStatus = '';
+    // Check email and virtual account status for Billstack
     let emailStatus = '';
+    let virtualAccountStatus = '';
     
-    if (CONFIG.MONNIFY_ENABLED) {
+    if (CONFIG.BILLSTACK_ENABLED) {
       if (!user.email || !isValidEmail(user.email)) {
         emailStatus = `\n📧 *Email Status\\:* ❌ NOT SET\n` +
           `_Set email via deposit process for virtual account_`;
@@ -202,14 +191,11 @@ bot.start(async (ctx) => {
         emailStatus = `\n📧 *Email Status\\:* ✅ SET`;
       }
       
-      if (!user.bvn) {
-        bvnStatus = `\n🆔 *BVN Status\\:* ❌ NOT SUBMITTED\n` +
-          `_Submit BVN via deposit process to get virtual account_`;
-      } else if (!user.bvnVerified) {
-        bvnStatus = `\n🆔 *BVN Status\\:* ⏳ UNDER REVIEW\n` +
-          `_Your BVN is being verified by our security team_`;
+      if (!user.virtualAccount) {
+        virtualAccountStatus = `\n💳 *Virtual Account\\:* ❌ NOT CREATED\n` +
+          `_Create virtual account via deposit process_`;
       } else {
-        bvnStatus = `\n🆔 *BVN Status\\:* ✅ VERIFIED`;
+        virtualAccountStatus = `\n💳 *Virtual Account\\:* ✅ ACTIVE`;
       }
     }
     
@@ -218,7 +204,7 @@ bot.start(async (ctx) => {
       `⚡ *Quick Start\\:*\n` +
       `1\\. Set PIN\\: /setpin 1234\n` +
       `2\\. Get KYC approved\n` +
-      `3\\. Set email & submit BVN\n` +
+      `3\\. Set email for virtual account\n` +
       `4\\. Deposit funds\n` +
       `5\\. Start buying\\!\n\n` +
       `📱 *Services\\:*\n` +
@@ -228,7 +214,7 @@ bot.start(async (ctx) => {
       `• 💳 Deposit via Virtual Account\n` +
       `• 🏦 Transfer to any bank\n\n` +
       `${emailStatus}` +
-      `${bvnStatus}\n\n` +
+      `${virtualAccountStatus}\n\n` +
       `📞 *Support\\:* @opuenekeke`,
       {
         parse_mode: 'MarkdownV2',
@@ -378,11 +364,10 @@ bot.hears('🆘 Help & Support', async (ctx) => {
       `💰 *Wallet Issues\\:*\n` +
       `• Missing deposit\\: Send proof to admin\n` +
       `• Wrong balance\\: Contact admin\n` +
-      `• Can't deposit\\: Check email & BVN setup\n\n` +
-      `📧 *Email & BVN Issues\\:*\n` +
+      `• Can't deposit\\: Check email & KYC status\n\n` +
+      `📧 *Email Issues\\:*\n` +
       `• Email required for virtual account\n` +
-      `• BVN must be 11 digits\n` +
-      `• BVN verification takes 1\\-2 hours\n` +
+      `• Use valid email address\n` +
       `• Contact admin if stuck\n\n` +
       `🏦 *Virtual Account Issues\\:*\n` +
       `• Funds not reflecting\\: Wait 5 minutes\n` +
@@ -437,23 +422,21 @@ bot.command('balance', async (ctx) => {
     const userId = ctx.from.id.toString();
     const user = initUser(userId);
     
-    // Check email and BVN status
+    // Check email and virtual account status for Billstack
     let emailStatus = '';
-    let bvnStatus = '';
+    let virtualAccountStatus = '';
     
-    if (CONFIG.MONNIFY_ENABLED) {
+    if (CONFIG.BILLSTACK_ENABLED) {
       if (!user.email || !isValidEmail(user.email)) {
         emailStatus = `📧 *Email Status\\:* ❌ NOT SET\n`;
       } else {
         emailStatus = `📧 *Email Status\\:* ✅ SET\n`;
       }
       
-      if (!user.bvn) {
-        bvnStatus = `🆔 *BVN Status\\:* ❌ NOT SUBMITTED\n`;
-      } else if (!user.bvnVerified) {
-        bvnStatus = `🆔 *BVN Status\\:* ⏳ UNDER REVIEW\n`;
+      if (!user.virtualAccount) {
+        virtualAccountStatus = `💳 *Virtual Account\\:* ❌ NOT CREATED\n`;
       } else {
-        bvnStatus = `🆔 *BVN Status\\:* ✅ VERIFIED\n`;
+        virtualAccountStatus = `💳 *Virtual Account\\:* ✅ ACTIVE\n`;
       }
     }
     
@@ -462,7 +445,7 @@ bot.command('balance', async (ctx) => {
       `💵 *Available\\:* ${formatCurrency(user.wallet)}\n` +
       `🛂 *KYC Status\\:* ${user.kyc.toUpperCase()}\n` +
       `${emailStatus}` +
-      `${bvnStatus}` +
+      `${virtualAccountStatus}` +
       `💡 Need more funds\\? Use "💳 Deposit Funds" button`,
       { parse_mode: 'MarkdownV2' }
     );
@@ -662,11 +645,11 @@ bot.action('start', async (ctx) => {
       ];
     }
     
-    // Check BVN and email status
-    let bvnStatus = '';
+    // Check email and virtual account status for Billstack
     let emailStatus = '';
+    let virtualAccountStatus = '';
     
-    if (CONFIG.MONNIFY_ENABLED) {
+    if (CONFIG.BILLSTACK_ENABLED) {
       if (!user.email || !isValidEmail(user.email)) {
         emailStatus = `\n📧 *Email Status\\:* ❌ NOT SET\n` +
           `_Set email via deposit process for virtual account_`;
@@ -674,14 +657,11 @@ bot.action('start', async (ctx) => {
         emailStatus = `\n📧 *Email Status\\:* ✅ SET`;
       }
       
-      if (!user.bvn) {
-        bvnStatus = `\n🆔 *BVN Status\\:* ❌ NOT SUBMITTED\n` +
-          `_Submit BVN via deposit process to get virtual account_`;
-      } else if (!user.bvnVerified) {
-        bvnStatus = `\n🆔 *BVN Status\\:* ⏳ UNDER REVIEW\n` +
-          `_Your BVN is being verified by our security team_`;
+      if (!user.virtualAccount) {
+        virtualAccountStatus = `\n💳 *Virtual Account\\:* ❌ NOT CREATED\n` +
+          `_Create virtual account via deposit process_`;
       } else {
-        bvnStatus = `\n🆔 *BVN Status\\:* ✅ VERIFIED`;
+        virtualAccountStatus = `\n💳 *Virtual Account\\:* ✅ ACTIVE`;
       }
     }
     
@@ -690,7 +670,7 @@ bot.action('start', async (ctx) => {
       `⚡ *Quick Start\\:*\n` +
       `1\\. Set PIN\\: /setpin 1234\n` +
       `2\\. Get KYC approved\n` +
-      `3\\. Set email & submit BVN\n` +
+      `3\\. Set email for virtual account\n` +
       `4\\. Deposit funds\n` +
       `5\\. Start buying\\!\n\n` +
       `📱 *Services\\:*\n` +
@@ -700,7 +680,7 @@ bot.action('start', async (ctx) => {
       `• 💳 Deposit via Virtual Account\n` +
       `• 🏦 Transfer to any bank\n\n` +
       `${emailStatus}` +
-      `${bvnStatus}\n\n` +
+      `${virtualAccountStatus}\n\n` +
       `📞 *Support\\:* @opuenekeke`,
       {
         parse_mode: 'MarkdownV2',
@@ -740,12 +720,9 @@ bot.on('text', async (ctx) => {
       await dataTextHandler(ctx, text, session, user, users, transactions, sessions, NETWORK_CODES, CONFIG);
     }
     
-    // Handle deposit text (email and BVN updates)
+    // Handle deposit text (email updates only - NO BVN)
     else if (
-      session.action === 'bvn_submission' ||
-      session.action === 'update_email' ||
-      session.action === 'update_email_before_bvn' ||
-      session.action === 'update_email_after_bvn'
+      session.action === 'update_email'
     ) {
       await depositTextHandler(ctx, text, session, user, users, transactions, sessions, CONFIG);
     }
@@ -1017,28 +994,28 @@ bot.catch((err, ctx) => {
 
 // ==================== LAUNCH BOT ====================
 bot.launch().then(() => {
-  console.log('🚀 VTU Bot with MONNIFY VIRTUAL ACCOUNT DEPOSITS!');
+  console.log('🚀 VTU Bot with BILLSTACK VIRTUAL ACCOUNT DEPOSITS!');
   console.log(`👑 Admin ID: ${CONFIG.ADMIN_ID}`);
   console.log(`🔑 VTU API Key: ${CONFIG.VTU_API_KEY ? '✅ SET' : '❌ NOT SET'}`);
-  console.log(`🏦 Monnify: ${CONFIG.MONNIFY_ENABLED ? '✅ ENABLED' : '❌ DISABLED'}`);
+  console.log(`🏦 Billstack: ${CONFIG.BILLSTACK_ENABLED ? '✅ ENABLED' : '❌ DISABLED'}`);
   console.log(`💳 Bank Transfer: ${CONFIG.BANK_TRANSFER_ENABLED ? '✅ ENABLED' : '❌ DISABLED'}`);
-  console.log(`🌐 Webhook Server: http://localhost:${WEBHOOK_PORT}/monnify-webhook`);
+  console.log(`🌐 Webhook Server: http://localhost:${WEBHOOK_PORT}/billstack-webhook`);
   
-  if (CONFIG.MONNIFY_ENABLED) {
-    console.log('\n✅ MONNIFY VIRTUAL ACCOUNT FEATURES:');
+  if (CONFIG.BILLSTACK_ENABLED) {
+    console.log('\n✅ BILLSTACK VIRTUAL ACCOUNT FEATURES:');
     console.log('1. ✅ Email verification required');
-    console.log('2. ✅ BVN submission required');
-    console.log('3. ✅ Admin verification for BVN');
-    console.log('4. ✅ Virtual account generation after verification');
-    console.log('5. ✅ Webhook integration for automatic deposits');
-    console.log('6. ✅ Real-time wallet funding');
+    console.log('2. ✅ NO BVN required');
+    console.log('3. ✅ Virtual account generation after KYC');
+    console.log('4. ✅ Webhook integration for automatic deposits');
+    console.log('5. ✅ Real-time wallet funding');
+    console.log('6. ✅ WEMA BANK virtual accounts');
   }
   
   console.log('\n✅ ALL CORE FEATURES WORKING:');
   console.log('• 📞 Buy Airtime (Working)');
   console.log('• 📡 Buy Data (Working)');
   console.log('• 💰 Wallet Balance (Working)');
-  console.log('• 💳 Deposit Funds (Email + BVN + Virtual Account)');
+  console.log('• 💳 Deposit Funds (Email + Virtual Account)');
   console.log('• 🏦 Money Transfer (Enhanced)');
   console.log('• 📜 Transaction History (Working)');
   console.log('• 🛂 KYC Status (Working)');
