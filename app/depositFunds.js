@@ -1,205 +1,178 @@
+/**
+ * depositFunds.js
+ * Handles wallet deposits via Billstack virtual accounts
+ */
+
 const axios = require('axios');
-const https = require('https');
-const { Markup } = require('telegraf');
 
-/* ---------------------------------------------------
-   Helpers
---------------------------------------------------- */
+/* =====================================================
+   ENV CHECK
+===================================================== */
+const {
+  BILLSTACK_API_KEY,
+  BILLSTACK_SECRET_KEY,
+  BILLSTACK_BASE_URL,
+} = process.env;
 
-const formatCurrency = amt =>
-  `₦${Number(amt || 0).toLocaleString('en-NG')}`;
-
-const isValidEmail = email =>
-  /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email || '');
-
-const escapeMD = text =>
-  text.replace(/[_*[\]()~`>#+\-=|{}.!]/g, '\\$&');
-
-/* ---------------------------------------------------
-   Billstack Core Config
---------------------------------------------------- */
-
-const BASE_URL = process.env.BILLSTACK_BASE_URL || 'https://api.billstack.io';
-const SECRET_KEY = process.env.BILLSTACK_SECRET_KEY;
-
-if (!SECRET_KEY) {
-  console.error('❌ BILLSTACK_SECRET_KEY not set');
+if (!BILLSTACK_API_KEY || !BILLSTACK_BASE_URL) {
+  console.error('❌ Billstack environment variables missing');
 }
 
-const httpsAgent = new https.Agent({ keepAlive: false });
+/* =====================================================
+   AXIOS INSTANCE
+===================================================== */
+const billstackClient = axios.create({
+  baseURL: BILLSTACK_BASE_URL,
+  timeout: 15000,
+  headers: {
+    'Content-Type': 'application/json',
+  },
+});
 
-let cachedToken = null;
-let tokenExpiry = 0;
+/* =====================================================
+   1️⃣ GENERATE BILLSTACK ACCESS TOKEN
+===================================================== */
+async function generateBillstackAccessToken() {
+  try {
+    console.log('🔑 Generating Billstack access token...');
 
-/* ---------------------------------------------------
-   Billstack Auth
---------------------------------------------------- */
-
-async function getBillstackToken() {
-  const now = Date.now();
-  if (cachedToken && tokenExpiry > now) return cachedToken;
-
-  const res = await axios.post(
-    `${BASE_URL}/v1/auth/token`,
-    {},
-    {
-      headers: {
-        Authorization: `Bearer ${SECRET_KEY}`,
-        'Content-Type': 'application/json'
-      },
-      httpsAgent,
-      timeout: 20000
-    }
-  );
-
-  if (!res.data?.data?.access_token) {
-    throw new Error('Invalid Billstack token response');
-  }
-
-  cachedToken = res.data.data.access_token;
-  tokenExpiry = now + 55 * 60 * 1000; // 55 mins
-
-  return cachedToken;
-}
-
-/* ---------------------------------------------------
-   Virtual Account
---------------------------------------------------- */
-
-async function createVirtualAccount(userId, user, virtualAccounts) {
-  const token = await getBillstackToken();
-
-  const payload = {
-    customer_name: user.fullName || `User ${userId}`,
-    customer_email: user.email,
-    customer_phone: user.phone || `+234${userId.slice(0, 10)}`,
-    account_reference: `VTU_${userId}_${Date.now()}`,
-    currency: 'NGN'
-  };
-
-  const res = await axios.post(
-    `${BASE_URL}/v1/virtual-accounts`,
-    payload,
-    {
-      headers: {
-        Authorization: `Bearer ${token}`,
-        'Content-Type': 'application/json'
-      },
-      httpsAgent,
-      timeout: 30000
-    }
-  );
-
-  if (!res.data?.data) {
-    throw new Error(res.data?.message || 'VA creation failed');
-  }
-
-  const d = res.data.data;
-
-  const account = {
-    provider: 'billstack',
-    accountReference: payload.account_reference,
-    accountNumber: d.account_number,
-    accountName: d.account_name,
-    bankName: d.bank_name || 'WEMA BANK',
-    bankCode: d.bank_code || '035',
-    created: new Date().toISOString(),
-    active: true
-  };
-
-  virtualAccounts[userId] = account;
-  user.virtualAccount = account.accountReference;
-
-  return account;
-}
-
-/* ---------------------------------------------------
-   Deposit Handler
---------------------------------------------------- */
-
-async function handleDeposit(ctx, users, virtualAccounts, sessions) {
-  const userId = ctx.from.id.toString();
-  const user = users[userId] ||= {
-    wallet: 0,
-    email: null,
-    kyc: 'pending',
-    fullName: ctx.from.first_name || `User ${userId}`
-  };
-
-  if (user.kyc !== 'approved') {
-    return ctx.reply('❌ KYC approval required.');
-  }
-
-  if (!isValidEmail(user.email)) {
-    sessions[userId] = { action: 'email' };
-    return ctx.reply('📧 Please send your email address.');
-  }
-
-  let account = virtualAccounts[userId];
-  if (!account) {
-    await ctx.reply('⏳ Creating your virtual account...');
-    account = await createVirtualAccount(userId, user, virtualAccounts);
-  }
-
-  await ctx.reply(
-    `💰 *YOUR VIRTUAL ACCOUNT*\n\n` +
-    `🏦 ${account.bankName}\n` +
-    `🔢 \`${account.accountNumber}\`\n` +
-    `📛 ${escapeMD(account.accountName)}\n\n` +
-    `Transfer funds to this account.`,
-    { parse_mode: 'MarkdownV2' }
-  );
-}
-
-/* ---------------------------------------------------
-   Webhook
---------------------------------------------------- */
-
-function handleBillstackWebhook(bot, users, transactions, virtualAccounts) {
-  return async (req, res) => {
-    try {
-      const data = req.body?.data;
-      if (!data?.amount || !data?.account_number) {
-        return res.sendStatus(200);
+    const response = await billstackClient.post(
+      '/v1/auth/token',
+      {},
+      {
+        headers: {
+          Authorization: `Bearer ${BILLSTACK_API_KEY}`,
+        },
       }
+    );
 
-      const amount = Number(data.amount);
-      const accNo = data.account_number;
+    const token = response?.data?.data?.access_token;
 
-      const userId = Object.keys(virtualAccounts)
-        .find(id => virtualAccounts[id].accountNumber === accNo);
-
-      if (!userId) return res.sendStatus(200);
-
-      const user = users[userId];
-      user.wallet += amount;
-
-      transactions[userId] ||= [];
-      transactions[userId].push({
-        type: 'deposit',
-        amount,
-        ref: data.reference,
-        date: new Date().toISOString()
-      });
-
-      await bot.telegram.sendMessage(
-        userId,
-        `✅ Deposit received\nAmount: ${formatCurrency(amount)}`
-      );
-
-      res.sendStatus(200);
-    } catch (e) {
-      console.error('Webhook error:', e.message);
-      res.sendStatus(200);
+    if (!token) {
+      throw new Error('No access token returned from Billstack');
     }
-  };
+
+    console.log('✅ Billstack access token generated');
+    return token;
+  } catch (error) {
+    console.error('❌ Billstack auth error:', {
+      message: error.message,
+      status: error.response?.status,
+      data: error.response?.data,
+    });
+    throw error;
+  }
 }
 
-/* ---------------------------------------------------
-   Exports
---------------------------------------------------- */
+/* =====================================================
+   2️⃣ CREATE VIRTUAL ACCOUNT
+===================================================== */
+async function createBillstackVirtualAccount(user) {
+  try {
+    console.log(`🔄 Creating Billstack virtual account for user ${user.telegramId}`);
 
+    const token = await generateBillstackAccessToken();
+
+    const response = await billstackClient.post(
+      '/v1/virtual-accounts',
+      {
+        email: user.email,
+        first_name: user.firstName || 'User',
+        last_name: user.lastName || 'Wallet',
+        reference: `TG-${user.telegramId}`,
+      },
+      {
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      }
+    );
+
+    console.log('✅ Virtual account created successfully');
+
+    return response.data?.data;
+  } catch (error) {
+    console.error('❌ Create virtual account failed:', {
+      message: error.message,
+      status: error.response?.status,
+      data: error.response?.data,
+    });
+    throw error;
+  }
+}
+
+/* =====================================================
+   3️⃣ HANDLE DEPOSIT REQUEST (TELEGRAM ENTRY POINT)
+===================================================== */
+async function handleDeposit(ctx, user) {
+  try {
+    console.log(`💰 Deposit requested by user ${user.telegramId}:`, {
+      hasEmail: !!user.email,
+      kycStatus: user.kycStatus,
+      hasVirtualAccount: !!user.virtualAccount,
+    });
+
+    // 🔐 KYC CHECK
+    if (user.kycStatus !== 'approved') {
+      return ctx.reply('❌ Please complete KYC before making a deposit.');
+    }
+
+    // 📧 EMAIL CHECK
+    if (!user.email) {
+      return ctx.reply('❌ Please add your email before depositing.');
+    }
+
+    // 🏦 CREATE VIRTUAL ACCOUNT IF NOT EXISTS
+    if (!user.virtualAccount) {
+      const account = await createBillstackVirtualAccount(user);
+
+      // 👉 SAVE TO DATABASE (YOU MUST IMPLEMENT THIS)
+      await saveUserVirtualAccount(user.telegramId, account);
+
+      return ctx.reply(
+        `✅ Your deposit account is ready!\n\n` +
+        `🏦 Bank: ${account.bank_name}\n` +
+        `🔢 Account No: ${account.account_number}\n` +
+        `👤 Name: ${account.account_name}\n\n` +
+        `💡 Transfer to this account to fund your wallet.`
+      );
+    }
+
+    // IF ACCOUNT ALREADY EXISTS
+    return ctx.reply(
+      `💰 Your deposit account:\n\n` +
+      `🏦 Bank: ${user.virtualAccount.bank_name}\n` +
+      `🔢 Account No: ${user.virtualAccount.account_number}\n` +
+      `👤 Name: ${user.virtualAccount.account_name}`
+    );
+
+  } catch (error) {
+    console.error('❌ Deposit handler failed:', error.message);
+    return ctx.reply('❌ Unable to process deposit right now. Please try again later.');
+  }
+}
+
+/* =====================================================
+   4️⃣ PLACEHOLDER: SAVE ACCOUNT TO DB
+===================================================== */
+async function saveUserVirtualAccount(telegramId, account) {
+  /**
+   * Example fields to save:
+   * account.account_number
+   * account.bank_name
+   * account.account_name
+   * account.reference
+   */
+
+  console.log(`💾 Saving virtual account for user ${telegramId}`);
+
+  // 🔴 IMPLEMENT YOUR OWN DATABASE LOGIC HERE
+  return true;
+}
+
+/* =====================================================
+   EXPORTS
+===================================================== */
 module.exports = {
   handleDeposit,
-  handleBillstackWebhook
 };
