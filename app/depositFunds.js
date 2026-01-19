@@ -20,8 +20,8 @@ const CONFIG = {
   BILLSTACK_API_KEY: BILLSTACK_API_KEY || '',
   BILLSTACK_BASE_URL: BILLSTACK_BASE_URL || 'https://api.billstack.io',
   BILLSTACK_WEBHOOK_SECRET: BILLSTACK_WEBHOOK_SECRET || '',
-  TIMEOUT: 30000,
-  MAX_RETRIES: 3,
+  TIMEOUT: 30000, // Increased from 10s to 30s
+  MAX_RETRIES: 5,
   RETRY_DELAY: 2000
 };
 
@@ -58,7 +58,7 @@ const createBillstackClient = () => {
     }
   );
 
-  // Response interceptor for error handling
+  // Response interceptor with improved error handling and retry logic
   client.interceptors.response.use(
     (response) => {
       console.log(`✅ ${response.status} ${response.config.url}`);
@@ -67,9 +67,24 @@ const createBillstackClient = () => {
     async (error) => {
       const originalRequest = error.config;
       
-      if (error.code === 'ECONNRESET' || error.code === 'ETIMEDOUT') {
-        console.warn(`⚠️ Network error: ${error.code}, retrying...`);
-        
+      // Log the error
+      console.error('❌ API Error:', {
+        code: error.code,
+        message: error.message,
+        url: error.config?.url,
+        method: error.config?.method,
+        status: error.response?.status,
+        data: error.response?.data
+      });
+      
+      // Check if we should retry
+      const shouldRetry = error.code === 'ECONNRESET' || 
+                         error.code === 'ETIMEDOUT' || 
+                         error.code === 'ENOTFOUND' ||
+                         error.code === 'ECONNREFUSED' ||
+                         (error.response && error.response.status >= 500);
+      
+      if (shouldRetry) {
         if (!originalRequest._retryCount) {
           originalRequest._retryCount = 0;
         }
@@ -80,18 +95,18 @@ const createBillstackClient = () => {
           
           console.log(`⏳ Retry ${originalRequest._retryCount}/${CONFIG.MAX_RETRIES} in ${delay}ms`);
           
+          // Wait before retrying
           await new Promise(resolve => setTimeout(resolve, delay));
+          
+          // Update headers for retry
+          originalRequest.headers = {
+            ...originalRequest.headers,
+            'X-Retry-Count': originalRequest._retryCount
+          };
+          
           return client(originalRequest);
         }
       }
-      
-      console.error('❌ API Error:', {
-        url: error.config?.url,
-        method: error.config?.method,
-        status: error.response?.status,
-        data: error.response?.data,
-        message: error.message
-      });
       
       return Promise.reject(error);
     }
@@ -155,6 +170,7 @@ class TokenManager {
       this.token = await this.refreshPromise;
       // Set expiry to 50 minutes from now (tokens typically last 60 minutes)
       this.tokenExpiry = Date.now() + (50 * 60 * 1000);
+      console.log('✅ Token cached until:', new Date(this.tokenExpiry).toISOString());
       return this.token;
     } finally {
       this.refreshPromise = null;
@@ -162,43 +178,54 @@ class TokenManager {
   }
 
   async refreshToken() {
-    try {
-      console.log('🔑 Generating new Billstack access token...');
-      
-      const response = await billstackClient.post(
-        '/v1/auth/token',
-        {},
-        {
-          headers: {
-            'Authorization': `Bearer ${CONFIG.BILLSTACK_API_KEY}`,
+    let lastError;
+    
+    for (let attempt = 1; attempt <= CONFIG.MAX_RETRIES; attempt++) {
+      try {
+        console.log(`🔑 Generating Billstack access token (Attempt ${attempt}/${CONFIG.MAX_RETRIES})...`);
+        
+        const response = await billstackClient.post(
+          '/v1/auth/token',
+          {},
+          {
+            headers: {
+              'Authorization': `Bearer ${CONFIG.BILLSTACK_API_KEY}`,
+              'X-Attempt': attempt
+            }
           }
+        );
+
+        const token = response?.data?.data?.access_token;
+        if (!token) {
+          throw new Error('No access token returned from Billstack');
         }
-      );
 
-      const token = response?.data?.data?.access_token;
-      if (!token) {
-        throw new Error('No access token returned from Billstack');
+        console.log('✅ Billstack token generated successfully');
+        return token;
+      } catch (error) {
+        lastError = error;
+        console.error(`❌ Token generation attempt ${attempt} failed:`, {
+          code: error.code,
+          message: error.message,
+          status: error.response?.status
+        });
+        
+        if (attempt < CONFIG.MAX_RETRIES) {
+          const delay = CONFIG.RETRY_DELAY * attempt;
+          console.log(`⏳ Waiting ${delay}ms before next attempt...`);
+          await new Promise(resolve => setTimeout(resolve, delay));
+        }
       }
-
-      console.log('✅ Billstack token generated successfully');
-      return token;
-    } catch (error) {
-      console.error('❌ Failed to generate Billstack token:', {
-        status: error.response?.status,
-        data: error.response?.data,
-        message: error.message
-      });
-      
-      if (error.response?.status === 401) {
-        throw new Error('Invalid Billstack API credentials');
-      }
-      throw error;
     }
+    
+    console.error('❌ All token generation attempts failed');
+    throw new Error(`Failed to generate Billstack token after ${CONFIG.MAX_RETRIES} attempts: ${lastError?.message || 'Unknown error'}`);
   }
 
   invalidateToken() {
     this.token = null;
     this.tokenExpiry = null;
+    console.log('🗑️ Token invalidated');
   }
 }
 
@@ -229,7 +256,8 @@ async function createVirtualAccountForUser(user) {
 
     console.log('📤 Creating virtual account with data:', {
       email: user.email,
-      reference: reference
+      reference: reference,
+      name: `${requestData.first_name} ${requestData.last_name}`
     });
 
     const response = await billstackClient.post(
@@ -250,7 +278,8 @@ async function createVirtualAccountForUser(user) {
     console.log(`✅ Virtual account created for ${user.telegramId}:`, {
       bank: accountData.bank_name,
       accountNumber: accountData.account_number,
-      accountName: accountData.account_name
+      accountName: accountData.account_name,
+      reference: reference
     });
 
     return {
@@ -267,12 +296,19 @@ async function createVirtualAccountForUser(user) {
   } catch (error) {
     console.error(`❌ Failed to create virtual account for user ${user.telegramId}:`, {
       message: error.message,
+      code: error.code,
       response: error.response?.data
     });
 
     // Invalidate token on auth errors
-    if (error.response?.status === 401) {
+    if (error.response?.status === 401 || error.response?.status === 403) {
       tokenManager.invalidateToken();
+      throw new Error('Authentication failed. Please check API credentials.');
+    }
+    
+    // Handle network errors
+    if (error.code === 'ECONNRESET' || error.code === 'ETIMEDOUT') {
+      throw new Error('Network connection issue. Please try again.');
     }
 
     throw new Error(`Virtual account creation failed: ${error.message}`);
@@ -302,15 +338,15 @@ async function getVirtualAccountDetails(accountNumber) {
 /* =====================================================
    3️⃣ DEPOSIT HANDLING
 ===================================================== */
-async function handleDepositCommand(ctx, users, virtualAccounts, sessions, bot) {
+async function handleDeposit(ctx, users, virtualAccounts, CONFIG, sessions, bot) {
   try {
-    const telegramId = ctx.from.id;
+    const telegramId = ctx.from.id.toString();
     console.log(`💰 Deposit requested by user ${telegramId}`);
     
     // Get or create user session
-    let session = sessions.get(telegramId) || {};
+    let session = sessions[telegramId] || {};
     session.depositStage = 'init';
-    sessions.set(telegramId, session);
+    sessions[telegramId] = session;
 
     // Check if user exists
     const user = await users.findById(telegramId);
@@ -331,10 +367,20 @@ async function handleDepositCommand(ctx, users, virtualAccounts, sessions, bot) 
 
     // Email check
     if (!user.email) {
+      // Start email collection process
+      session.action = 'update_email';
+      session.step = 1;
+      
       return ctx.reply(
-        '📧 Email Required\n\n' +
-        'Please add your email address first:\n' +
-        'Use /email to set your email address.'
+        '📧 Email Required for Virtual Account\n\n' +
+        'To create a virtual account, we need your email address.\n\n' +
+        '📝 Please enter your email address:',
+        {
+          parse_mode: 'Markdown',
+          ...Markup.inlineKeyboard([
+            [Markup.button.callback('⬅️ Cancel', 'start')]
+          ])
+        }
       );
     }
 
@@ -396,9 +442,18 @@ async function handleDepositCommand(ctx, users, virtualAccounts, sessions, bot) 
 
       } catch (error) {
         console.error('Virtual account creation error:', error);
-        return ctx.reply(
-          '❌ Failed to create deposit account. Please try again later or contact support.'
-        );
+        
+        let errorMessage = '❌ Failed to create deposit account. ';
+        
+        if (error.message.includes('Authentication failed')) {
+          errorMessage += 'API credentials issue. Please contact admin.';
+        } else if (error.message.includes('Network connection')) {
+          errorMessage += 'Network issue. Please try again in a few minutes.';
+        } else {
+          errorMessage += 'Please try again later or contact support.';
+        }
+        
+        return ctx.reply(errorMessage);
       }
     } else {
       // Show existing account
@@ -412,23 +467,10 @@ async function handleDepositCommand(ctx, users, virtualAccounts, sessions, bot) 
         `💡 *Need help?* Use /support`;
 
       await ctx.reply(accountMessage, { parse_mode: 'Markdown' });
-
-      // Show recent transactions if available
-      const recentDeposits = await getRecentDeposits(telegramId);
-      if (recentDeposits.length > 0) {
-        let transactionsMessage = `📊 *Recent Deposits:*\n\n`;
-        recentDeposits.forEach((tx, index) => {
-          transactionsMessage += 
-            `${index + 1}. ₦${formatAmount(tx.amount)} - ${new Date(tx.created_at).toLocaleDateString()}\n` +
-            `   Status: ${tx.status === 'success' ? '✅' : '⏳'} ${tx.status}\n`;
-        });
-        
-        await ctx.reply(transactionsMessage, { parse_mode: 'Markdown' });
-      }
     }
 
     // Clear session
-    sessions.delete(telegramId);
+    sessions[telegramId] = null;
 
   } catch (error) {
     console.error('Deposit command error:', error);
@@ -438,16 +480,10 @@ async function handleDepositCommand(ctx, users, virtualAccounts, sessions, bot) 
   }
 }
 
-async function getRecentDeposits(userId, limit = 5) {
-  // This would query your transactions database
-  // Placeholder implementation
-  return [];
-}
-
 /* =====================================================
    4️⃣ WEBHOOK HANDLER
 ===================================================== */
-function createWebhookHandler(bot, users, transactions, virtualAccounts) {
+function handleBillstackWebhook(bot, users, transactions, CONFIG, virtualAccounts) {
   return async (req, res) => {
     let eventData = null;
     
@@ -489,11 +525,7 @@ function createWebhookHandler(bot, users, transactions, virtualAccounts) {
           break;
           
         case 'virtual_account.created':
-          await handleVirtualAccountCreated(eventData.data, bot, users, virtualAccounts);
-          break;
-          
-        case 'virtual_account.updated':
-          await handleVirtualAccountUpdated(eventData.data, bot, users, virtualAccounts);
+          console.log('ℹ️ Virtual account created event:', eventData.data);
           break;
           
         default:
@@ -633,43 +665,42 @@ async function handleFailedTransfer(data, bot, users, transactions) {
   });
 }
 
-async function handleVirtualAccountCreated(data, bot, users, virtualAccounts) {
-  console.log(`🏦 Virtual account created: ${data.account_number}`);
-  // Sync account creation if needed
-}
-
-async function handleVirtualAccountUpdated(data, bot, users, virtualAccounts) {
-  console.log(`🔄 Virtual account updated: ${data.account_number}`);
-  // Handle account updates
-}
-
 /* =====================================================
-   5️⃣ ADMIN FUNCTIONS
+   5️⃣ TEXT HANDLER FOR DEPOSIT EMAIL UPDATES
 ===================================================== */
-async function checkVirtualAccountStatus(accountNumber) {
-  try {
-    const account = await getVirtualAccountDetails(accountNumber);
-    return {
-      status: 'active',
-      account: account,
-      last_checked: new Date()
-    };
-  } catch (error) {
-    return {
-      status: 'error',
-      error: error.message,
-      last_checked: new Date()
-    };
-  }
-}
-
-async function manualDepositVerification(telegramId, amount, reference) {
-  // Manual verification for disputed transactions
-  try {
-    // Implementation for manual verification
-    return { success: true, message: 'Deposit verified manually' };
-  } catch (error) {
-    return { success: false, error: error.message };
+async function handleText(ctx, text, session, user, users, transactions, sessions, CONFIG) {
+  // This function handles text messages for deposit-related actions
+  // Currently handles email updates only
+  if (session.action === 'update_email') {
+    if (session.step === 1) {
+      const email = text.trim();
+      
+      // Validate email
+      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+      if (!emailRegex.test(email)) {
+        return await ctx.reply(
+          '❌ Invalid email format.\n\n' +
+          'Please enter a valid email address (e.g., user@example.com):'
+        );
+      }
+      
+      // Save email
+      user.email = email;
+      delete sessions[ctx.from.id.toString()];
+      
+      await ctx.reply(
+        `✅ Email saved: ${email}\n\n` +
+        `Now you can create a virtual account.\n\n` +
+        `Click the button below to create your virtual account:`,
+        {
+          parse_mode: 'Markdown',
+          ...Markup.inlineKeyboard([
+            [Markup.button.callback('💳 Create Virtual Account', 'create_virtual_account')],
+            [Markup.button.callback('🏠 Home', 'start')]
+          ])
+        }
+      );
+    }
   }
 }
 
@@ -678,8 +709,9 @@ async function manualDepositVerification(telegramId, amount, reference) {
 ===================================================== */
 module.exports = {
   // Main handlers
-  handleDeposit: handleDepositCommand,
-  handleBillstackWebhook: createWebhookHandler,
+  handleDeposit,
+  handleBillstackWebhook,
+  handleText,
   
   // Virtual account functions
   createVirtualAccountForUser,
@@ -688,11 +720,4 @@ module.exports = {
   // Utility functions
   generateReference,
   formatAmount,
-  
-  // Admin functions
-  checkVirtualAccountStatus,
-  manualDepositVerification,
-  
-  // Token manager (for testing)
-  _tokenManager: tokenManager
 };
