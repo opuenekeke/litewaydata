@@ -2,6 +2,7 @@
 const axios = require('axios');
 const crypto = require('crypto');
 const { Markup } = require('telegraf');
+const https = require('https');
 
 // Helper functions
 function formatCurrency(amount) {
@@ -37,12 +38,24 @@ async function generateBillstackAccessToken() {
     const baseUrl = process.env.BILLSTACK_BASE_URL || 'https://api.billstack.io';
     
     if (!apiKey || !secretKey) {
-      console.error('❌ Billstack API credentials missing from environment');
-      throw new Error('Billstack API credentials not configured in environment');
+      throw new Error('Billstack API credentials not configured');
     }
+    
+    console.log('🔍 Testing Billstack API connectivity...');
+    
+    // Create HTTPS agent with better settings
+    const httpsAgent = new https.Agent({
+      keepAlive: true,
+      maxSockets: 5,
+      keepAliveMsecs: 1000,
+      timeout: 15000,
+      rejectUnauthorized: true
+    });
     
     // Billstack uses Basic Auth with API key:secret
     const authString = Buffer.from(`${apiKey}:${secretKey}`).toString('base64');
+    
+    console.log('📤 Making auth request to Billstack...');
     
     const response = await axios.post(
       `${baseUrl}/v1/auth/token`,
@@ -50,24 +63,67 @@ async function generateBillstackAccessToken() {
       {
         headers: {
           'Authorization': `Basic ${authString}`,
-          'Content-Type': 'application/json'
+          'Content-Type': 'application/json',
+          'User-Agent': 'VTU-Bot/1.0',
+          'Accept': 'application/json'
         },
-        timeout: 10000
+        timeout: 20000,
+        httpsAgent: httpsAgent,
+        maxRedirects: 2
       }
     );
     
+    console.log('📥 Billstack auth response received:', {
+      success: response.data.success,
+      status: response.status
+    });
+    
     if (response.data.success && response.data.data?.access_token) {
+      console.log('✅ Billstack authentication successful');
       return {
         token: response.data.data.access_token,
         baseUrl: baseUrl
       };
     }
-    throw new Error('Failed to get Billstack access token');
+    
+    throw new Error(response.data.message || 'Failed to get Billstack access token');
   } catch (error) {
     console.error('❌ Billstack auth error:', error.message);
-    if (error.response?.data) {
-      console.error('❌ API Response:', error.response.data);
+    
+    // Provide specific error messages
+    if (error.code === 'ECONNRESET') {
+      throw new Error('Billstack API connection was reset. Please try again.');
     }
+    
+    if (error.code === 'ETIMEDOUT') {
+      throw new Error('Billstack API request timed out. Please try again.');
+    }
+    
+    if (error.response) {
+      // The request was made and the server responded with a status code
+      console.error('❌ API Response Status:', error.response.status);
+      console.error('❌ API Response Data:', error.response.data);
+      
+      if (error.response.status === 401) {
+        throw new Error('Invalid Billstack API credentials. Please check your API key and secret.');
+      }
+      
+      if (error.response.status === 403) {
+        throw new Error('Access denied to Billstack API. Your account may need activation.');
+      }
+      
+      if (error.response.status === 429) {
+        throw new Error('Too many requests to Billstack API. Please try again later.');
+      }
+      
+      if (error.response.status >= 500) {
+        throw new Error('Billstack API server error. Please try again later.');
+      }
+    } else if (error.request) {
+      // The request was made but no response was received
+      throw new Error('No response from Billstack API. Please check your internet connection.');
+    }
+    
     throw error;
   }
 }
@@ -107,19 +163,31 @@ async function createVirtualAccountForUser(userId, user, virtualAccounts) {
     
     console.log('📤 Creating Billstack virtual account...');
     
+    // Create HTTPS agent for the request
+    const httpsAgent = new https.Agent({
+      keepAlive: true,
+      maxSockets: 5,
+      timeout: 30000
+    });
+    
     const response = await axios.post(
       `${baseUrl}/v1/virtual-accounts`,
       payload,
       {
         headers: {
           'Authorization': `Bearer ${token}`,
-          'Content-Type': 'application/json'
+          'Content-Type': 'application/json',
+          'User-Agent': 'VTU-Bot/1.0'
         },
-        timeout: 15000
+        timeout: 30000,
+        httpsAgent: httpsAgent
       }
     );
     
-    console.log('📥 Billstack response received:', response.data.success ? 'SUCCESS' : 'FAILED');
+    console.log('📥 Billstack response:', {
+      success: response.data.success,
+      status: response.status
+    });
     
     if (response.data.success && response.data.data) {
       const accountDetails = response.data.data;
@@ -152,9 +220,20 @@ async function createVirtualAccountForUser(userId, user, virtualAccounts) {
     
   } catch (error) {
     console.error('❌ Create Billstack virtual account error:', error.message);
+    
     if (error.response?.data) {
       console.error('❌ API Response:', error.response.data);
     }
+    
+    // Re-throw with improved message
+    if (error.message.includes('authentication') || error.message.includes('credentials')) {
+      throw new Error('Billstack authentication failed. Please check API credentials.');
+    }
+    
+    if (error.message.includes('timeout') || error.message.includes('socket')) {
+      throw new Error('Billstack API connection timeout. Please try again.');
+    }
+    
     throw error;
   }
 }
@@ -200,6 +279,7 @@ async function getVirtualAccountDetails(userId, user, virtualAccounts) {
         }
       } catch (error) {
         console.error('❌ Get Billstack virtual account error:', error.message);
+        // Don't throw, just return null
       }
     }
     return null;
@@ -296,10 +376,7 @@ module.exports = {
           `🔧 *BILLSTACK SETUP REQUIRED*\n\n` +
           `📧 *Your Email\\:* ✅ ${escapeMarkdown(user.email)}\n` +
           `🛂 *KYC Status\\:* ✅ ${user.kyc.toUpperCase()}\n\n` +
-          `⚠️ *Admin needs to configure Billstack API in Render*\n\n` +
-          `📋 *Required Environment Variables:*\n` +
-          `• BILLSTACK_API_KEY\n` +
-          `• BILLSTACK_SECRET_KEY\n\n` +
+          `⚠️ *Admin needs to configure Billstack API*\n\n` +
           `📞 *Contact @opuenekeke to complete setup*\n` +
           `🆔 *Your User ID\\:* \`${userId}\``,
           {
@@ -340,7 +417,7 @@ module.exports = {
           await ctx.reply(
             '🔄 *Creating your virtual account\\.\\.\\.*\n\n' +
             'Please wait while we generate your dedicated bank account\\.\n' +
-            'This may take a few seconds\\.',
+            'This may take 10\\-30 seconds\\.',
             { parse_mode: 'MarkdownV2' }
           );
           
@@ -351,28 +428,46 @@ module.exports = {
           }
           
         } catch (error) {
-          console.error('❌ Virtual account creation failed:', error);
+          console.error('❌ Virtual account creation failed:', error.message);
           
           let errorMessage = 'Failed to create virtual account. Please try again later.';
+          let showRetryButton = true;
+          
           if (error.message.includes('email')) {
             errorMessage = 'Invalid email address. Please update your email.';
           } else if (error.message.includes('KYC')) {
             errorMessage = 'KYC verification required. Contact admin.';
-          } else if (error.message.includes('credentials') || error.message.includes('authentication')) {
-            errorMessage = 'Billstack API authentication failed. Check API keys.';
+          } else if (error.message.includes('authentication') || error.message.includes('credentials')) {
+            errorMessage = 'Billstack API authentication failed. Contact admin.';
+            showRetryButton = false;
+          } else if (error.message.includes('timeout') || error.message.includes('socket') || error.message.includes('connection')) {
+            errorMessage = 'Billstack API is currently unavailable. Please try again in a few minutes.';
+          } else if (error.message.includes('unavailable')) {
+            errorMessage = 'Billstack service temporarily unavailable. Please try again later.';
           }
+          
+          // Prepare keyboard
+          const keyboardButtons = [];
+          
+          if (showRetryButton) {
+            keyboardButtons.push([Markup.button.callback('🔄 Try Again', 'deposit')]);
+          }
+          
+          keyboardButtons.push(
+            [Markup.button.callback('📧 Update Email', 'update_email')],
+            [Markup.button.callback('🏠 Home', 'start')]
+          );
           
           return await ctx.reply(
             `❌ *VIRTUAL ACCOUNT CREATION FAILED*\n\n` +
             `📋 *Error\\:* ${escapeMarkdown(errorMessage)}\n\n` +
             `📞 *Please contact @opuenekeke for assistance*\n` +
-            `Include your User ID\\: \`${userId}\``,
+            `Include your User ID\\: \`${userId}\`\n\n` +
+            `🔧 *Status\\:* Billstack API Connection Issue\n` +
+            `💡 *Try manual deposit option if retry fails*`,
             {
               parse_mode: 'MarkdownV2',
-              ...Markup.inlineKeyboard([
-                [Markup.button.callback('📧 Update Email', 'update_email')],
-                [Markup.button.callback('🏠 Home', 'start')]
-              ])
+              ...Markup.inlineKeyboard(keyboardButtons)
             }
           );
         }
@@ -411,7 +506,9 @@ module.exports = {
     } catch (error) {
       console.error('❌ Deposit handler error:', error);
       await ctx.reply(
-        '❌ An error occurred while processing deposit\\. Please try again\\.',
+        '❌ An unexpected error occurred while processing deposit\\. Please try again\\.\n\n' +
+        `📞 *Contact @opuenekeke if issue persists*\n` +
+        `🆔 *Your User ID\\:* \`${ctx.from.id}\``,
         { parse_mode: 'MarkdownV2' }
       );
     }
@@ -451,11 +548,15 @@ module.exports = {
           `✅ *EMAIL SAVED\\!*\n\n` +
           `📧 *Your Email\\:* ${escapeMarkdown(email)}\n\n` +
           `🎉 Email saved successfully\\!\n` +
-          `You can now create your virtual account when Billstack is configured\\.`,
+          `You can now create your virtual account\\.\n\n` +
+          `💡 *Next Steps\\:*\n` +
+          `1\\. Make sure KYC is approved\n` +
+          `2\\. Try deposit again\n` +
+          `3\\. Contact @opuenekeke if any issues`,
           {
             parse_mode: 'MarkdownV2',
             ...Markup.inlineKeyboard([
-              [Markup.button.callback('💳 Try Deposit Again', 'start')],
+              [Markup.button.callback('💳 Try Deposit Now', 'deposit')],
               [Markup.button.callback('🏠 Home', 'start')]
             ])
           }
@@ -520,6 +621,14 @@ module.exports = {
           }
         );
         
+        ctx.answerCbQuery();
+      },
+      'deposit': async (ctx) => {
+        const userId = ctx.from.id.toString();
+        const user = users[userId] || { wallet: 0 };
+        
+        // Call the deposit handler
+        await module.exports.handleDeposit(ctx, users, virtualAccounts, CONFIG, sessions);
         ctx.answerCbQuery();
       }
     };
