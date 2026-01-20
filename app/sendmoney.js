@@ -13,208 +13,49 @@ const CONFIG = {
   MAX_TRANSFER_AMOUNT: 1000000
 };
 
-// Session management integrated with main session system
+// Global sessions object that will be shared
+const sendMoneySessions = {};
+
+// Session management 
 const sessionManager = {
-  sessions: {},
-  
   startSession: (userId, action) => {
-    // Get the main sessions object from global context or pass it
-    // For now, we'll store locally but need to sync with main
-    sessionManager.sessions[userId] = {
+    sendMoneySessions[userId] = {
       action: action,
       step: 1,
       data: {},
       timestamp: Date.now()
     };
-    return sessionManager.sessions[userId];
+    console.log(`💼 SendMoney: Session started for ${userId}: ${action}`);
+    return sendMoneySessions[userId];
   },
   
   getSession: (userId) => {
-    return sessionManager.sessions[userId] || null;
+    return sendMoneySessions[userId] || null;
   },
   
   updateStep: (userId, step, data = {}) => {
-    if (sessionManager.sessions[userId]) {
-      sessionManager.sessions[userId].step = step;
-      Object.assign(sessionManager.sessions[userId].data, data);
+    if (sendMoneySessions[userId]) {
+      sendMoneySessions[userId].step = step;
+      if (data) {
+        Object.assign(sendMoneySessions[userId].data, data);
+      }
+      console.log(`💼 SendMoney: User ${userId} updated to step ${step}, data:`, data);
     }
   },
   
   clearSession: (userId) => {
-    delete sessionManager.sessions[userId];
+    delete sendMoneySessions[userId];
+    console.log(`💼 SendMoney: Session cleared for ${userId}`);
   },
   
   updateSession: (userId, updates) => {
-    if (sessionManager.sessions[userId]) {
-      Object.assign(sessionManager.sessions[userId], updates);
+    if (sendMoneySessions[userId]) {
+      Object.assign(sendMoneySessions[userId], updates);
     }
   }
 };
 
-// Monnify Authentication
-async function getMonnifyToken() {
-  try {
-    const authString = Buffer.from(`${CONFIG.MONNIFY_API_KEY}:${CONFIG.MONNIFY_SECRET_KEY}`).toString('base64');
-    
-    const response = await axios.post(
-      `${CONFIG.MONNIFY_BASE_URL}/api/v1/auth/login`,
-      {},
-      {
-        headers: {
-          'Authorization': `Basic ${authString}`
-        }
-      }
-    );
-    
-    return response.data.responseBody.accessToken;
-  } catch (error) {
-    console.error('❌ Monnify auth error:', error.response?.data || error.message);
-    throw new Error('Failed to authenticate with Monnify');
-  }
-}
-
-// Resolve Bank Account
-async function resolveBankAccount(accountNumber, bankCode) {
-  try {
-    const token = await getMonnifyToken();
-    
-    const response = await axios.get(
-      `${CONFIG.MONNIFY_BASE_URL}/api/v1/disbursements/account/validate`,
-      {
-        params: {
-          accountNumber: accountNumber,
-          bankCode: bankCode
-        },
-        headers: {
-          'Authorization': `Bearer ${token}`
-        }
-      }
-    );
-    
-    return {
-      success: true,
-      accountName: response.data.responseBody.accountName,
-      accountNumber: response.data.responseBody.accountNumber,
-      bankCode: response.data.responseBody.bankCode,
-      bankName: response.data.responseBody.bankName
-    };
-  } catch (error) {
-    console.error('❌ Account resolution error:', error.response?.data || error.message);
-    return {
-      success: false,
-      error: error.response?.data?.responseMessage || 'Failed to resolve account'
-    };
-  }
-}
-
-// Get Available Banks
-async function getBanks() {
-  try {
-    const token = await getMonnifyToken();
-    
-    const response = await axios.get(
-      `${CONFIG.MONNIFY_BASE_URL}/api/v1/banks`,
-      {
-        headers: {
-          'Authorization': `Bearer ${token}`
-        }
-      }
-    );
-    
-    return response.data.responseBody;
-  } catch (error) {
-    console.error('❌ Get banks error:', error.response?.data || error.message);
-    // Return common Nigerian banks as fallback
-    return [
-      { code: "044", name: "Access Bank" },
-      { code: "063", name: "Access Bank (Diamond)" },
-      { code: "050", name: "Ecobank Nigeria" },
-      { code: "070", name: "Fidelity Bank" },
-      { code: "011", name: "First Bank of Nigeria" },
-      { code: "214", name: "First City Monument Bank" },
-      { code: "058", name: "Guaranty Trust Bank" },
-      { code: "030", name: "Heritage Bank" },
-      { code: "301", name: "Jaiz Bank" },
-      { code: "082", name: "Keystone Bank" },
-      { code: "076", name: "Polaris Bank" },
-      { code: "101", name: "Providus Bank" },
-      { code: "221", name: "Stanbic IBTC Bank" },
-      { code: "068", name: "Standard Chartered Bank" },
-      { code: "232", name: "Sterling Bank" },
-      { code: "100", name: "Suntrust Bank" },
-      { code: "032", name: "Union Bank of Nigeria" },
-      { code: "033", name: "United Bank for Africa" },
-      { code: "215", name: "Unity Bank" },
-      { code: "035", name: "Wema Bank" },
-      { code: "057", name: "Zenith Bank" }
-    ];
-  }
-}
-
-// Initiate Transfer
-async function initiateTransfer(transferData) {
-  try {
-    const token = await getMonnifyToken();
-    
-    const payload = {
-      amount: transferData.amount,
-      reference: transferData.reference,
-      narration: transferData.narration || `Transfer to ${transferData.accountName}`,
-      destinationBankCode: transferData.bankCode,
-      destinationAccountNumber: transferData.accountNumber,
-      destinationAccountName: transferData.accountName,
-      currency: "NGN",
-      sourceAccountNumber: "default"
-    };
-    
-    const response = await axios.post(
-      `${CONFIG.MONNIFY_BASE_URL}/api/v2/disbursements/single`,
-      payload,
-      {
-        headers: {
-          'Authorization': `Bearer ${token}`,
-          'Content-Type': 'application/json'
-        }
-      }
-    );
-    
-    return {
-      success: true,
-      transactionReference: response.data.responseBody.transactionReference,
-      paymentReference: response.data.responseBody.paymentReference,
-      amount: response.data.responseBody.amount,
-      status: response.data.responseBody.status
-    };
-  } catch (error) {
-    console.error('❌ Transfer initiation error:', error.response?.data || error.message);
-    return {
-      success: false,
-      error: error.response?.data?.responseMessage || 'Transfer failed'
-    };
-  }
-}
-
-// Format currency
-function formatCurrency(amount) {
-  return `₦${amount.toLocaleString('en-NG')}`;
-}
-
-// Escape markdown
-function escapeMarkdown(text) {
-  if (typeof text !== 'string') return text;
-  const specialChars = ['_', '*', '[', ']', '(', ')', '~', '`', '>', '#', '+', '-', '=', '|', '{', '}', '.', '!'];
-  let escapedText = text;
-  specialChars.forEach(char => {
-    const regex = new RegExp(`\\${char}`, 'g');
-    escapedText = escapedText.replace(regex, `\\${char}`);
-  });
-  return escapedText;
-}
-
-// Check if Monnify is configured
-function isMonnifyConfigured() {
-  return CONFIG.MONNIFY_API_KEY && CONFIG.MONNIFY_SECRET_KEY && CONFIG.MONNIFY_CONTRACT_CODE;
-}
+// ... (rest of the functions remain the same - getMonnifyToken, resolveBankAccount, getBanks, initiateTransfer, formatCurrency, escapeMarkdown, isMonnifyConfigured)
 
 // Main handler
 async function handleSendMoney(ctx, users, transactions) {
@@ -270,9 +111,8 @@ async function handleSendMoney(ctx, users, transactions) {
       );
     }
     
-    // Start session using the main session system
+    // Start session
     sessionManager.startSession(userId, 'send_money');
-    console.log(`💼 Send Money session started for ${userId}: send_money`);
     
     // Get banks and show selection
     const banks = await getBanks();
@@ -362,19 +202,19 @@ function getCallbacks(bot, users, transactions, CONFIG) {
       }
     },
     
-    // Bank selection - FIXED: Add 'sendmoney_' prefix to avoid conflicts
+    // Bank selection
     '^sendmoney_bank_(.+)$': async (ctx) => {
       try {
         const userId = ctx.from.id.toString();
         const bankCode = ctx.match[1];
         const session = sessionManager.getSession(userId);
         
-        console.log(`💼 Bank selected: ${bankCode} for user ${userId}`);
-        console.log(`💼 Current session:`, session);
+        console.log(`💼 SendMoney: Bank callback - User: ${userId}, Bank: ${bankCode}`);
+        console.log(`💼 SendMoney: Current session:`, session);
         
-        if (!session || session.action !== 'send_money' || session.step !== 1) {
-          console.log(`💼 Session issue: ${!session ? 'No session' : 'Wrong step/action'}`);
-          return ctx.answerCbQuery('Session expired. Start over.');
+        if (!session || session.action !== 'send_money') {
+          console.log(`💼 SendMoney: Invalid session - starting new`);
+          sessionManager.startSession(userId, 'send_money');
         }
         
         // Get bank name
@@ -382,7 +222,7 @@ function getCallbacks(bot, users, transactions, CONFIG) {
         const selectedBank = banks.find(b => b.code === bankCode);
         const bankName = selectedBank ? selectedBank.name : 'Unknown Bank';
         
-        console.log(`💼 Bank selected: ${bankName} (${bankCode})`);
+        console.log(`💼 SendMoney: Bank selected: ${bankName} (${bankCode})`);
         
         sessionManager.updateStep(userId, 2, { 
           bankCode: bankCode, 
@@ -412,24 +252,26 @@ function getCallbacks(bot, users, transactions, CONFIG) {
 }
 
 // Handle text messages for send money
-async function handleText(ctx, text, users, transactions, mainSessionManager) {
+async function handleText(ctx, text, users, transactions) {
   const userId = ctx.from.id.toString();
-  const session = sessionManager.getSession(userId); // Use sendmoney's session manager
+  const session = sessionManager.getSession(userId); // Use our own session manager
   
-  console.log(`💼 Text handler - User: ${userId}, Text: ${text}, Has session: ${!!session}`);
+  console.log(`💼 SendMoney Text Handler - User: ${userId}, Text: "${text}"`);
+  console.log(`💼 SendMoney: Current sessions:`, Object.keys(sendMoneySessions));
+  console.log(`💼 SendMoney: User session:`, session);
   
   if (!session || session.action !== 'send_money') {
-    console.log(`💼 No valid send money session found`);
+    console.log(`💼 SendMoney: No active send_money session for user ${userId}`);
     return false;
   }
   
   const user = users[userId];
   if (!user) {
-    console.log(`💼 User not found: ${userId}`);
+    console.log(`💼 SendMoney: User ${userId} not found in database`);
     return false;
   }
   
-  console.log(`💼 Current step: ${session.step}`);
+  console.log(`💼 SendMoney: Processing step ${session.step} for user ${userId}`);
   
   try {
     if (session.step === 2) {
@@ -446,7 +288,7 @@ async function handleText(ctx, text, users, transactions, mainSessionManager) {
         return true;
       }
       
-      console.log(`💼 Account number entered: ${accountNumber}`);
+      console.log(`💼 SendMoney: Valid account number: ${accountNumber}`);
       sessionManager.updateStep(userId, 3, { accountNumber: accountNumber });
       
       const loadingMsg = await ctx.reply(
@@ -462,7 +304,7 @@ async function handleText(ctx, text, users, transactions, mainSessionManager) {
         const resolution = await resolveBankAccount(accountNumber, session.data.bankCode);
         
         if (!resolution.success) {
-          console.log(`💼 Account resolution failed: ${resolution.error}`);
+          console.log(`💼 SendMoney: Account resolution failed: ${resolution.error}`);
           await ctx.reply(
             `❌ *ACCOUNT RESOLUTION FAILED*\n\n` +
             `🔢 *Account Number\\:* ${accountNumber}\n` +
@@ -475,7 +317,7 @@ async function handleText(ctx, text, users, transactions, mainSessionManager) {
           
           sessionManager.updateStep(userId, 4); // Manual entry step
         } else {
-          console.log(`💼 Account resolved: ${resolution.accountName}`);
+          console.log(`💼 SendMoney: Account resolved successfully: ${resolution.accountName}`);
           sessionManager.updateStep(userId, 5, {
             accountName: resolution.accountName,
             accountNumber: resolution.accountNumber,
@@ -496,7 +338,7 @@ async function handleText(ctx, text, users, transactions, mainSessionManager) {
           );
         }
       } catch (error) {
-        console.error('❌ Account resolution error:', error);
+        console.error('❌ SendMoney: Account resolution error:', error);
         sessionManager.updateStep(userId, 4);
         
         await ctx.reply(
@@ -512,16 +354,17 @@ async function handleText(ctx, text, users, transactions, mainSessionManager) {
       try {
         await ctx.telegram.deleteMessage(ctx.chat.id, loadingMsg.message_id);
       } catch (e) {
-        console.log('❌ Could not delete loading message:', e.message);
+        console.log('💼 SendMoney: Could not delete loading message:', e.message);
       }
       
       return true;
     }
     
+    // Continue with other steps (4, 5, 6) as before...
     if (session.step === 4) {
       // Manual account name entry
       const accountName = text.substring(0, 100);
-      console.log(`💼 Manual account name entered: ${accountName}`);
+      console.log(`💼 SendMoney: Manual account name entered: ${accountName}`);
       sessionManager.updateStep(userId, 5, {
         accountName: accountName,
         accountNumber: session.data.accountNumber,
@@ -543,7 +386,7 @@ async function handleText(ctx, text, users, transactions, mainSessionManager) {
     if (session.step === 5) {
       // Amount entry
       const amount = parseFloat(text);
-      console.log(`💼 Amount entered: ${amount}`);
+      console.log(`💼 SendMoney: Amount entered: ${amount}`);
       
       if (isNaN(amount) || amount < CONFIG.MIN_TRANSFER_AMOUNT || amount > CONFIG.MAX_TRANSFER_AMOUNT) {
         await ctx.reply(
@@ -592,7 +435,7 @@ async function handleText(ctx, text, users, transactions, mainSessionManager) {
     
     if (session.step === 6) {
       // PIN confirmation
-      console.log(`💼 PIN entered: ${text}, User PIN: ${user.pin}`);
+      console.log(`💼 SendMoney: PIN entered: ${text}, User PIN: ${user.pin}`);
       
       if (text !== user.pin) {
         user.pinAttempts++;
@@ -625,7 +468,7 @@ async function handleText(ctx, text, users, transactions, mainSessionManager) {
       const { amount, fee, totalAmount } = session.data;
       const { accountNumber, accountName, bankName, bankCode } = session.data;
       
-      console.log(`💼 Processing transfer: ${amount} to ${accountName}`);
+      console.log(`💼 SendMoney: Processing transfer: ${amount} to ${accountName}`);
       
       const processingMsg = await ctx.reply(
         `🔄 *PROCESSING BANK TRANSFER VIA MONNIFY\\.\\.\\.*\n\n` +
@@ -720,7 +563,7 @@ async function handleText(ctx, text, users, transactions, mainSessionManager) {
         }
         
       } catch (error) {
-        console.error('❌ Transfer processing error:', error);
+        console.error('❌ SendMoney: Transfer processing error:', error);
         
         await ctx.reply(
           `⚠️ *TRANSFER ERROR*\n\n` +
@@ -736,7 +579,7 @@ async function handleText(ctx, text, users, transactions, mainSessionManager) {
       try {
         await ctx.telegram.deleteMessage(ctx.chat.id, processingMsg.message_id);
       } catch (e) {
-        console.log('❌ Could not delete processing message:', e.message);
+        console.log('💼 SendMoney: Could not delete processing message:', e.message);
       }
       
       sessionManager.clearSession(userId);
@@ -744,13 +587,174 @@ async function handleText(ctx, text, users, transactions, mainSessionManager) {
     }
     
   } catch (error) {
-    console.error('❌ Send money text handler error:', error);
+    console.error('❌ SendMoney: Text handler error:', error);
     await ctx.reply('❌ An error occurred. Please try again.');
     sessionManager.clearSession(userId);
     return true;
   }
   
+  console.log(`💼 SendMoney: No matching step found for step ${session.step}`);
   return false;
+}
+
+// Also, make sure all the helper functions are included (getMonnifyToken, resolveBankAccount, etc.)
+// I'll include them here for completeness:
+
+async function getMonnifyToken() {
+  try {
+    const authString = Buffer.from(`${CONFIG.MONNIFY_API_KEY}:${CONFIG.MONNIFY_SECRET_KEY}`).toString('base64');
+    
+    const response = await axios.post(
+      `${CONFIG.MONNIFY_BASE_URL}/api/v1/auth/login`,
+      {},
+      {
+        headers: {
+          'Authorization': `Basic ${authString}`
+        }
+      }
+    );
+    
+    return response.data.responseBody.accessToken;
+  } catch (error) {
+    console.error('❌ Monnify auth error:', error.response?.data || error.message);
+    throw new Error('Failed to authenticate with Monnify');
+  }
+}
+
+async function resolveBankAccount(accountNumber, bankCode) {
+  try {
+    const token = await getMonnifyToken();
+    
+    const response = await axios.get(
+      `${CONFIG.MONNIFY_BASE_URL}/api/v1/disbursements/account/validate`,
+      {
+        params: {
+          accountNumber: accountNumber,
+          bankCode: bankCode
+        },
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      }
+    );
+    
+    return {
+      success: true,
+      accountName: response.data.responseBody.accountName,
+      accountNumber: response.data.responseBody.accountNumber,
+      bankCode: response.data.responseBody.bankCode,
+      bankName: response.data.responseBody.bankName
+    };
+  } catch (error) {
+    console.error('❌ Account resolution error:', error.response?.data || error.message);
+    return {
+      success: false,
+      error: error.response?.data?.responseMessage || 'Failed to resolve account'
+    };
+  }
+}
+
+async function getBanks() {
+  try {
+    const token = await getMonnifyToken();
+    
+    const response = await axios.get(
+      `${CONFIG.MONNIFY_BASE_URL}/api/v1/banks`,
+      {
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      }
+    );
+    
+    return response.data.responseBody;
+  } catch (error) {
+    console.error('❌ Get banks error:', error.response?.data || error.message);
+    return [
+      { code: "044", name: "Access Bank" },
+      { code: "063", name: "Access Bank (Diamond)" },
+      { code: "050", name: "Ecobank Nigeria" },
+      { code: "070", name: "Fidelity Bank" },
+      { code: "011", name: "First Bank of Nigeria" },
+      { code: "214", name: "First City Monument Bank" },
+      { code: "058", name: "Guaranty Trust Bank" },
+      { code: "030", name: "Heritage Bank" },
+      { code: "301", name: "Jaiz Bank" },
+      { code: "082", name: "Keystone Bank" },
+      { code: "076", name: "Polaris Bank" },
+      { code: "101", name: "Providus Bank" },
+      { code: "221", name: "Stanbic IBTC Bank" },
+      { code: "068", name: "Standard Chartered Bank" },
+      { code: "232", name: "Sterling Bank" },
+      { code: "100", name: "Suntrust Bank" },
+      { code: "032", name: "Union Bank of Nigeria" },
+      { code: "033", name: "United Bank for Africa" },
+      { code: "215", name: "Unity Bank" },
+      { code: "035", name: "Wema Bank" },
+      { code: "057", name: "Zenith Bank" }
+    ];
+  }
+}
+
+async function initiateTransfer(transferData) {
+  try {
+    const token = await getMonnifyToken();
+    
+    const payload = {
+      amount: transferData.amount,
+      reference: transferData.reference,
+      narration: transferData.narration || `Transfer to ${transferData.accountName}`,
+      destinationBankCode: transferData.bankCode,
+      destinationAccountNumber: transferData.accountNumber,
+      destinationAccountName: transferData.accountName,
+      currency: "NGN",
+      sourceAccountNumber: "default"
+    };
+    
+    const response = await axios.post(
+      `${CONFIG.MONNIFY_BASE_URL}/api/v2/disbursements/single`,
+      payload,
+      {
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json'
+        }
+      }
+    );
+    
+    return {
+      success: true,
+      transactionReference: response.data.responseBody.transactionReference,
+      paymentReference: response.data.responseBody.paymentReference,
+      amount: response.data.responseBody.amount,
+      status: response.data.responseBody.status
+    };
+  } catch (error) {
+    console.error('❌ Transfer initiation error:', error.response?.data || error.message);
+    return {
+      success: false,
+      error: error.response?.data?.responseMessage || 'Transfer failed'
+    };
+  }
+}
+
+function formatCurrency(amount) {
+  return `₦${amount.toLocaleString('en-NG')}`;
+}
+
+function escapeMarkdown(text) {
+  if (typeof text !== 'string') return text;
+  const specialChars = ['_', '*', '[', ']', '(', ')', '~', '`', '>', '#', '+', '-', '=', '|', '{', '}', '.', '!'];
+  let escapedText = text;
+  specialChars.forEach(char => {
+    const regex = new RegExp(`\\${char}`, 'g');
+    escapedText = escapedText.replace(regex, `\\${char}`);
+  });
+  return escapedText;
+}
+
+function isMonnifyConfigured() {
+  return CONFIG.MONNIFY_API_KEY && CONFIG.MONNIFY_SECRET_KEY && CONFIG.MONNIFY_CONTRACT_CODE;
 }
 
 // Export module
