@@ -1,4 +1,4 @@
-// index.js - COMPLETE FIXED VERSION
+// index.js - FIXED VERSION (Airtime & Data working)
 require('dotenv').config();
 const { Telegraf, Markup } = require('telegraf');
 const axios = require('axios');
@@ -45,7 +45,7 @@ const users = {};
 const transactions = {};
 const virtualAccounts = {};
 
-// Session storage for other modules
+// Session storage for airtime/data modules
 const sessions = {};
 
 // Use deposit module's session manager
@@ -382,27 +382,13 @@ bot.hears('📡 Buy Data', (ctx) => {
 });
 
 // Wallet Balance
-bot.hears('💰 Wallet Balance', (ctx) => {
-  try {
-    const userId = ctx.from.id.toString();
-    const user = initUser(userId);
-    return walletBalance.handleWallet(ctx, users, CONFIG);
-  } catch (error) {
-    console.error('❌ Wallet balance error:', error);
-    ctx.reply('❌ Error loading wallet balance.');
-  }
-});
+bot.hears('💰 Wallet Balance', (ctx) => walletBalance.handleWallet(ctx, users, CONFIG));
 
 // Deposit Funds - USING NEW MODULE
 bot.hears('💳 Deposit Funds', (ctx) => {
-  try {
-    const userId = ctx.from.id.toString();
-    const user = initUser(userId);
-    return depositFunds.handleDeposit(ctx, users, virtualAccounts);
-  } catch (error) {
-    console.error('❌ Deposit handler error:', error);
-    ctx.reply('❌ Error loading deposit options.');
-  }
+  const userId = ctx.from.id.toString();
+  const user = initUser(userId);
+  return depositFunds.handleDeposit(ctx, users, virtualAccounts);
 });
 
 // Money Transfer
@@ -499,40 +485,13 @@ bot.hears('🏦 Money Transfer', async (ctx) => {
 });
 
 // Transaction History
-bot.hears('📜 Transaction History', (ctx) => {
-  try {
-    const userId = ctx.from.id.toString();
-    const user = initUser(userId);
-    return transactionHistory.handleHistory(ctx, users, transactions, CONFIG);
-  } catch (error) {
-    console.error('❌ Transaction history error:', error);
-    ctx.reply('❌ Error loading transaction history.');
-  }
-});
+bot.hears('📜 Transaction History', (ctx) => transactionHistory.handleHistory(ctx, users, transactions, CONFIG));
 
 // KYC Status
-bot.hears('🛂 KYC Status', (ctx) => {
-  try {
-    const userId = ctx.from.id.toString();
-    const user = initUser(userId);
-    return kyc.handleKyc(ctx, users);
-  } catch (error) {
-    console.error('❌ KYC handler error:', error);
-    ctx.reply('❌ Error loading KYC status.');
-  }
-});
+bot.hears('🛂 KYC Status', (ctx) => kyc.handleKyc(ctx, users));
 
 // Admin Panel
-bot.hears('🛠️ Admin Panel', (ctx) => {
-  try {
-    const userId = ctx.from.id.toString();
-    const user = initUser(userId);
-    return admin.handleAdminPanel(ctx, users, transactions, CONFIG);
-  } catch (error) {
-    console.error('❌ Admin panel error:', error);
-    ctx.reply('❌ Error loading admin panel.');
-  }
-});
+bot.hears('🛠️ Admin Panel', (ctx) => admin.handleAdminPanel(ctx, users, transactions, CONFIG));
 
 // Help & Support
 bot.hears('🆘 Help & Support', async (ctx) => {
@@ -660,8 +619,60 @@ try {
 }
 
 // ==================== CALLBACK HANDLERS ====================
+console.log('\n📋 REGISTERING CALLBACK HANDLERS...');
+
+// Get callbacks from modules
+const airtimeCallbacks = buyAirtime.getCallbacks ? buyAirtime.getCallbacks(bot, users, sessions, CONFIG, NETWORK_CODES) : {};
+const dataCallbacks = buyData.getCallbacks ? buyData.getCallbacks(bot, users, sessions, CONFIG) : {};
+const adminCallbacks = admin.getCallbacks ? admin.getCallbacks(bot, users, transactions, CONFIG) : {};
+const kycCallbacks = kyc.getCallbacks ? kyc.getCallbacks(bot, users) : {};
+
+// Register Airtime callbacks
+console.log('📞 Registering airtime callbacks...');
+Object.entries(airtimeCallbacks).forEach(([pattern, handler]) => {
+  console.log(`   Airtime: ${pattern}`);
+  if (pattern.includes('(') || pattern.includes('.') || pattern.includes('+') || pattern.includes('*')) {
+    bot.action(new RegExp(`^${pattern}$`), handler);
+  } else {
+    bot.action(pattern, handler);
+  }
+});
+
+// Register Data callbacks
+console.log('📡 Registering data callbacks...');
+Object.entries(dataCallbacks).forEach(([pattern, handler]) => {
+  console.log(`   Data: ${pattern}`);
+  if (pattern.includes('(') || pattern.includes('.') || pattern.includes('+') || pattern.includes('*')) {
+    bot.action(new RegExp(`^${pattern}$`), handler);
+  } else {
+    bot.action(pattern, handler);
+  }
+});
+
+// Register Admin callbacks
+console.log('🛠️ Registering admin callbacks...');
+Object.entries(adminCallbacks).forEach(([pattern, handler]) => {
+  console.log(`   Admin: ${pattern}`);
+  if (pattern.includes('(') || pattern.includes('.') || pattern.includes('+') || pattern.includes('*')) {
+    bot.action(new RegExp(`^${pattern}$`), handler);
+  } else {
+    bot.action(pattern, handler);
+  }
+});
+
+// Register KYC callbacks
+console.log('🛂 Registering KYC callbacks...');
+Object.entries(kycCallbacks).forEach(([pattern, handler]) => {
+  console.log(`   KYC: ${pattern}`);
+  if (pattern.includes('(') || pattern.includes('.') || pattern.includes('+') || pattern.includes('*')) {
+    bot.action(new RegExp(`^${pattern}$`), handler);
+  } else {
+    bot.action(pattern, handler);
+  }
+});
 
 // Register bank transfer callbacks
+console.log('🏦 Registering bank transfer callbacks...');
 bot.action(/^bank_(.+)$/, async (ctx) => {
   try {
     const userId = ctx.from.id.toString();
@@ -845,6 +856,8 @@ bot.action('start', async (ctx) => {
     console.error('❌ Start callback error:', error);
   }
 });
+
+console.log('✅ All callback handlers registered');
 
 // ==================== TEXT MESSAGE HANDLER ====================
 bot.on('text', async (ctx) => {
