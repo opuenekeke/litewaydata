@@ -1,9 +1,17 @@
-// index.js - MAIN ENTRY POINT (UPDATED FOR NEW DEPOSIT MODULE)
+// index.js - COMPLETE FIXED VERSION
 require('dotenv').config();
 const { Telegraf, Markup } = require('telegraf');
 const axios = require('axios');
 const crypto = require('crypto');
 const express = require('express');
+
+// Debug: Check environment variables
+console.log('🔍 ENVIRONMENT VARIABLES DEBUG:');
+console.log('BOT_TOKEN:', process.env.BOT_TOKEN ? 'SET' : 'NOT SET');
+console.log('VTU_API_KEY:', process.env.VTU_API_KEY ? 'SET' : 'NOT SET');
+console.log('BILLSTACK_API_KEY:', process.env.BILLSTACK_API_KEY ? 'SET' : 'NOT SET');
+console.log('BILLSTACK_SECRET_KEY:', process.env.BILLSTACK_SECRET_KEY ? 'SET' : 'NOT SET');
+console.log('ADMIN_ID:', process.env.ADMIN_ID || 'NOT SET');
 
 // Import the modular components
 const buyAirtime = require('./app/buyAirtime');
@@ -37,8 +45,10 @@ const users = {};
 const transactions = {};
 const virtualAccounts = {};
 
-// Use deposit module's session manager instead of global sessions
-// Get session manager from depositFunds module
+// Session storage for other modules
+const sessions = {};
+
+// Use deposit module's session manager
 const depositSessionManager = depositFunds.sessionManager;
 
 // Network mapping for VTU API
@@ -60,7 +70,7 @@ function initUser(userId) {
     users[userId] = {
       telegramId: userId,
       wallet: 0,
-      kycStatus: isAdminUser ? 'approved' : 'pending',  // Auto-approve admin
+      kycStatus: isAdminUser ? 'approved' : 'pending',
       pin: null,
       pinAttempts: 0,
       pinLocked: false,
@@ -87,7 +97,7 @@ function initUser(userId) {
   return users[userId];
 }
 
-// Add virtual account database methods to match deposit module expectations
+// Add virtual account database methods
 virtualAccounts.findByUserId = async (telegramId) => {
   const user = users[telegramId];
   if (user && user.virtualAccount) {
@@ -115,7 +125,6 @@ virtualAccounts.create = async (accountData) => {
     is_active: accountData.is_active !== undefined ? accountData.is_active : true
   };
   
-  // Also store in old format for compatibility
   users[userId].virtualAccountNumber = accountData.account_number;
   users[userId].virtualAccountBank = accountData.bank_name;
   
@@ -225,25 +234,6 @@ function formatPhoneNumberForVTU(phone) {
   return cleaned;
 }
 
-function formatPhoneNumberForAPI(phone) {
-  let cleaned = phone.replace(/\s+/g, '');
-  if (cleaned.startsWith('234')) {
-    cleaned = '0' + cleaned.substring(3);
-  }
-  if (cleaned.startsWith('+234')) {
-    cleaned = '0' + cleaned.substring(4);
-  }
-  if (!cleaned.startsWith('0')) {
-    cleaned = '0' + cleaned;
-  }
-  if (cleaned.length !== 11) {
-    if (cleaned.length > 11) {
-      cleaned = cleaned.substring(0, 11);
-    }
-  }
-  return cleaned;
-}
-
 function validatePhoneNumber(phone) {
   const cleaned = phone.replace(/\s+/g, '');
   return /^(0|234)(7|8|9)(0|1)\d{8}$/.test(cleaned);
@@ -261,7 +251,13 @@ const app = express();
 app.use(express.json());
 
 // Setup deposit handlers first (this registers callbacks)
-depositFunds.setupDepositHandlers(bot, users, virtualAccounts);
+console.log('🔧 Setting up deposit handlers...');
+try {
+  depositFunds.setupDepositHandlers(bot, users, virtualAccounts);
+  console.log('✅ Deposit handlers setup complete');
+} catch (error) {
+  console.error('❌ Failed to setup deposit handlers:', error);
+}
 
 // Webhook endpoint - BILLSTACK VERSION
 app.post('/billstack-webhook', depositFunds.handleBillstackWebhook(bot, users, transactions, virtualAccounts));
@@ -361,21 +357,52 @@ bot.start(async (ctx) => {
 });
 
 // ==================== MODULAR HANDLERS ====================
-// Buy Airtime
-bot.hears('📞 Buy Airtime', (ctx) => buyAirtime.handleAirtime(ctx, users, sessions, CONFIG));
+// Buy Airtime - FIXED
+bot.hears('📞 Buy Airtime', (ctx) => {
+  try {
+    const userId = ctx.from.id.toString();
+    const user = initUser(userId);
+    return buyAirtime.handleAirtime(ctx, users, sessions, CONFIG, NETWORK_CODES);
+  } catch (error) {
+    console.error('❌ Airtime handler error:', error);
+    ctx.reply('❌ Error loading airtime purchase. Please try again.');
+  }
+});
 
-// Buy Data
-bot.hears('📡 Buy Data', (ctx) => buyData.handleData(ctx, users, sessions, CONFIG));
+// Buy Data - FIXED
+bot.hears('📡 Buy Data', (ctx) => {
+  try {
+    const userId = ctx.from.id.toString();
+    const user = initUser(userId);
+    return buyData.handleData(ctx, users, sessions, CONFIG, NETWORK_CODES);
+  } catch (error) {
+    console.error('❌ Data handler error:', error);
+    ctx.reply('❌ Error loading data purchase. Please try again.');
+  }
+});
 
 // Wallet Balance
-bot.hears('💰 Wallet Balance', (ctx) => walletBalance.handleWallet(ctx, users, CONFIG));
+bot.hears('💰 Wallet Balance', (ctx) => {
+  try {
+    const userId = ctx.from.id.toString();
+    const user = initUser(userId);
+    return walletBalance.handleWallet(ctx, users, CONFIG);
+  } catch (error) {
+    console.error('❌ Wallet balance error:', error);
+    ctx.reply('❌ Error loading wallet balance.');
+  }
+});
 
 // Deposit Funds - USING NEW MODULE
 bot.hears('💳 Deposit Funds', (ctx) => {
-  const userId = ctx.from.id.toString();
-  const user = initUser(userId);
-  // Use the new deposit module with proper session management
-  return depositFunds.handleDeposit(ctx, users, virtualAccounts);
+  try {
+    const userId = ctx.from.id.toString();
+    const user = initUser(userId);
+    return depositFunds.handleDeposit(ctx, users, virtualAccounts);
+  } catch (error) {
+    console.error('❌ Deposit handler error:', error);
+    ctx.reply('❌ Error loading deposit options.');
+  }
 });
 
 // Money Transfer
@@ -472,13 +499,40 @@ bot.hears('🏦 Money Transfer', async (ctx) => {
 });
 
 // Transaction History
-bot.hears('📜 Transaction History', (ctx) => transactionHistory.handleHistory(ctx, users, transactions, CONFIG));
+bot.hears('📜 Transaction History', (ctx) => {
+  try {
+    const userId = ctx.from.id.toString();
+    const user = initUser(userId);
+    return transactionHistory.handleHistory(ctx, users, transactions, CONFIG);
+  } catch (error) {
+    console.error('❌ Transaction history error:', error);
+    ctx.reply('❌ Error loading transaction history.');
+  }
+});
 
 // KYC Status
-bot.hears('🛂 KYC Status', (ctx) => kyc.handleKyc(ctx, users));
+bot.hears('🛂 KYC Status', (ctx) => {
+  try {
+    const userId = ctx.from.id.toString();
+    const user = initUser(userId);
+    return kyc.handleKyc(ctx, users);
+  } catch (error) {
+    console.error('❌ KYC handler error:', error);
+    ctx.reply('❌ Error loading KYC status.');
+  }
+});
 
 // Admin Panel
-bot.hears('🛠️ Admin Panel', (ctx) => admin.handleAdminPanel(ctx, users, transactions, CONFIG));
+bot.hears('🛠️ Admin Panel', (ctx) => {
+  try {
+    const userId = ctx.from.id.toString();
+    const user = initUser(userId);
+    return admin.handleAdminPanel(ctx, users, transactions, CONFIG);
+  } catch (error) {
+    console.error('❌ Admin panel error:', error);
+    ctx.reply('❌ Error loading admin panel.');
+  }
+});
 
 // Help & Support
 bot.hears('🆘 Help & Support', async (ctx) => {
@@ -596,9 +650,200 @@ bot.command('balance', async (ctx) => {
 });
 
 // Import admin commands
-const adminCommands = require('./app/admin').getAdminCommands(bot, users, transactions, CONFIG);
-Object.keys(adminCommands).forEach(command => {
-  bot.command(command, adminCommands[command]);
+try {
+  const adminCommands = require('./app/admin').getAdminCommands(bot, users, transactions, CONFIG);
+  Object.keys(adminCommands).forEach(command => {
+    bot.command(command, adminCommands[command]);
+  });
+} catch (error) {
+  console.error('❌ Failed to load admin commands:', error);
+}
+
+// ==================== CALLBACK HANDLERS ====================
+
+// Register bank transfer callbacks
+bot.action(/^bank_(.+)$/, async (ctx) => {
+  try {
+    const userId = ctx.from.id.toString();
+    const bankCode = ctx.match[1];
+    const session = depositSessionManager.getSession(userId);
+    
+    if (!session || session.action !== 'bank_transfer' || session.step !== 1) {
+      return ctx.answerCbQuery('Session expired. Start over.');
+    }
+    
+    const bankMap = {
+      '044': 'Access Bank',
+      '011': 'First Bank',
+      '058': 'GTBank',
+      '033': 'UBA',
+      '057': 'Zenith Bank',
+      '070': 'Fidelity Bank',
+      '032': 'Union Bank',
+      '221': 'Stanbic IBTC',
+      '232': 'Sterling Bank',
+      '035': 'Wema Bank'
+    };
+    
+    const bankName = bankMap[bankCode] || 'Unknown Bank';
+    
+    depositSessionManager.updateStep(userId, 2, { bankCode: bankCode, bankName: bankName });
+    
+    await ctx.editMessageText(
+      `✅ *Bank Selected\\:* ${escapeMarkdown(bankName)}\n\n` +
+      `🔢 *Enter recipient account number \\(10 digits\\)\\:*\n\n` +
+      `📝 *Example\\:* 1234567890\n\n` +
+      `💡 *Note\\:* Account name will be fetched automatically\\.`,
+      {
+        parse_mode: 'MarkdownV2',
+        ...Markup.inlineKeyboard([
+          [Markup.button.callback('⬅️ Back to Banks', 'bank_transfer_start')]
+        ])
+      }
+    );
+    
+    ctx.answerCbQuery();
+    
+  } catch (error) {
+    console.error('❌ Bank selection error:', error);
+    ctx.answerCbQuery('❌ Error occurred');
+  }
+});
+
+bot.action('bank_transfer_start', async (ctx) => {
+  try {
+    const userId = ctx.from.id.toString();
+    const user = initUser(userId);
+    
+    depositSessionManager.startSession(userId, 'bank_transfer');
+    
+    const banks = [
+      { name: "Access Bank", code: "044" },
+      { name: "First Bank", code: "011" },
+      { name: "GTBank", code: "058" },
+      { name: "UBA", code: "033" },
+      { name: "Zenith Bank", code: "057" },
+      { name: "Fidelity Bank", code: "070" },
+      { name: "Union Bank", code: "032" },
+      { name: "Stanbic IBTC", code: "221" },
+      { name: "Sterling Bank", code: "232" },
+      { name: "Wema Bank", code: "035" }
+    ];
+    
+    const bankButtons = [];
+    for (let i = 0; i < banks.length; i += 2) {
+      const row = [];
+      row.push(Markup.button.callback(`🏦 ${banks[i].name}`, `bank_${banks[i].code}`));
+      if (banks[i + 1]) {
+        row.push(Markup.button.callback(`🏦 ${banks[i + 1].name}`, `bank_${banks[i + 1].code}`));
+      }
+      bankButtons.push(row);
+    }
+    
+    bankButtons.push([Markup.button.callback('⬅️ Cancel', 'start')]);
+    
+    await ctx.editMessageText(
+      `🏦 *TRANSFER TO BANK ACCOUNT*\n\n` +
+      `💵 *Your Balance\\:* ${formatCurrency(user.wallet)}\n` +
+      `💸 *Transfer Fee\\:* 1\\.5%\n` +
+      `💰 *Min\\:* ${formatCurrency(100)} \\| *Max\\:* ${formatCurrency(1000000)}\n\n` +
+      `📋 *Select Bank\\:*`,
+      {
+        parse_mode: 'MarkdownV2',
+        ...Markup.inlineKeyboard(bankButtons)
+      }
+    );
+    
+    ctx.answerCbQuery();
+    
+  } catch (error) {
+    console.error('❌ Bank transfer start error:', error);
+    ctx.answerCbQuery('❌ Error occurred');
+  }
+});
+
+// Home callback
+bot.action('start', async (ctx) => {
+  try {
+    const userId = ctx.from.id.toString();
+    const user = initUser(userId);
+    const isUserAdmin = isAdmin(userId);
+    
+    let keyboard;
+    
+    if (isUserAdmin) {
+      keyboard = [
+        ['📞 Buy Airtime', '📡 Buy Data'],
+        ['💰 Wallet Balance', '💳 Deposit Funds'],
+        ['🏦 Money Transfer', '📜 Transaction History'],
+        ['🛂 KYC Status', '🛠️ Admin Panel'],
+        ['🆘 Help & Support']
+      ];
+    } else {
+      keyboard = [
+        ['📞 Buy Airtime', '📡 Buy Data'],
+        ['💰 Wallet Balance', '💳 Deposit Funds'],
+        ['🏦 Money Transfer', '📜 Transaction History'],
+        ['🛂 KYC Status', '🆘 Help & Support']
+      ];
+    }
+    
+    // Check email and virtual account status for Billstack
+    let emailStatus = '';
+    let virtualAccountStatus = '';
+    
+    // Check if Billstack API is configured
+    const billstackConfigured = CONFIG.BILLSTACK_API_KEY && CONFIG.BILLSTACK_SECRET_KEY;
+    
+    if (billstackConfigured) {
+      if (!user.email || !isValidEmail(user.email)) {
+        emailStatus = `\n📧 *Email Status\\:* ❌ NOT SET\n` +
+          `_Set email via deposit process for virtual account_`;
+      } else {
+        emailStatus = `\n📧 *Email Status\\:* ✅ SET`;
+      }
+      
+      if (!user.virtualAccount) {
+        virtualAccountStatus = `\n💳 *Virtual Account\\:* ❌ NOT CREATED\n` +
+          `_Create virtual account via deposit process_`;
+      } else {
+        virtualAccountStatus = `\n💳 *Virtual Account\\:* ✅ ACTIVE`;
+      }
+    } else {
+      // Billstack not configured yet
+      emailStatus = `\n📧 *Email Status\\:* ${user.email ? '✅ SET' : '❌ NOT SET'}`;
+      virtualAccountStatus = `\n💳 *Virtual Account\\:* ⏳ CONFIG PENDING\n` +
+        `_Admin configuring Billstack API_`;
+    }
+    
+    await ctx.editMessageText(
+      `🌟 *Welcome to Liteway VTU Bot\\!*\n\n` +
+      `⚡ *Quick Start\\:*\n` +
+      `1\\. Set PIN\\: /setpin 1234\n` +
+      `2\\. Get KYC approved\n` +
+      `3\\. Set email for virtual account\n` +
+      `4\\. Deposit funds\n` +
+      `5\\. Start buying\\!\n\n` +
+      `📱 *Services\\:*\n` +
+      `• 📞 Airtime \\(All networks\\)\n` +
+      `• 📡 Data bundles\n` +
+      `• 💰 Wallet system\n` +
+      `• 💳 Deposit via Virtual Account\n` +
+      `• 🏦 Transfer to any bank\n\n` +
+      `${emailStatus}` +
+      `${virtualAccountStatus}\n\n` +
+      `📞 *Support\\:* @opuenekeke`,
+      {
+        parse_mode: 'MarkdownV2',
+        ...Markup.keyboard(keyboard).resize()
+      }
+    );
+    
+    ctx.answerCbQuery();
+    
+  } catch (error) {
+    console.error('❌ Start callback error:', error);
+  }
 });
 
 // ==================== TEXT MESSAGE HANDLER ====================
@@ -611,38 +856,32 @@ bot.on('text', async (ctx) => {
     const user = initUser(userId);
     
     // First, check if this is a deposit-related text
-    // Use the deposit module's text handler
-    const handled = await depositFunds.handleDepositText(ctx, text, users, virtualAccounts, bot);
-    if (handled) {
+    const depositHandled = await depositFunds.handleDepositText(ctx, text, users, virtualAccounts, bot);
+    if (depositHandled) {
       return;
     }
     
-    // Check for old session system (for compatibility)
-    const oldSession = global.sessions && global.sessions[userId];
-    
-    // Handle old session system for other modules
-    if (oldSession) {
-      // Import text handlers from modules
+    // Handle airtime text
+    if (sessions[userId] && sessions[userId].action === 'airtime') {
       const airtimeTextHandler = require('./app/buyAirtime').handleText;
-      const dataTextHandler = require('./app/buyData').handleText;
-      
-      // Handle airtime text
-      if (oldSession.action === 'airtime') {
-        await airtimeTextHandler(ctx, text, oldSession, user, users, transactions, global.sessions, NETWORK_CODES, CONFIG);
-        return;
-      }
-      
-      // Handle data text
-      else if (oldSession.action === 'data') {
-        await dataTextHandler(ctx, text, oldSession, user, users, transactions, global.sessions, NETWORK_CODES, CONFIG);
+      if (airtimeTextHandler) {
+        await airtimeTextHandler(ctx, text, sessions[userId], user, users, transactions, sessions, NETWORK_CODES, CONFIG);
         return;
       }
     }
     
-    // Check deposit module session
+    // Handle data text
+    if (sessions[userId] && sessions[userId].action === 'data') {
+      const dataTextHandler = require('./app/buyData').handleText;
+      if (dataTextHandler) {
+        await dataTextHandler(ctx, text, sessions[userId], user, users, transactions, sessions, NETWORK_CODES, CONFIG);
+        return;
+      }
+    }
+    
+    // Check deposit module session for bank transfer
     const depositSession = depositSessionManager.getSession(userId);
     
-    // Handle bank transfer (using deposit module's session manager)
     if (depositSession && depositSession.action === 'bank_transfer') {
       if (depositSession.step === 2) {
         const accountNumber = text.replace(/\s+/g, '');
@@ -667,7 +906,6 @@ bot.on('text', async (ctx) => {
         );
         
         try {
-          // Simulate API call for account resolution
           await new Promise(resolve => setTimeout(resolve, 2000));
           
           depositSessionManager.updateStep(userId, 4, { 
