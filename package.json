@@ -3,6 +3,7 @@
   "version": "2.0.0",
   "description": "Complete VTU Bot with Monnify Virtual Accounts & Bank Transfers",
   "main": "index.js",
+  "type": "commonjs",
   "scripts": {
     "start": "node index.js",
     "dev": "nodemon index.js",
@@ -33,10 +34,8 @@
     "telegram-bot"
   ],
   "author": "Your Name",
-  "license": "MIT"{
-  "type": "commonjs",
+  "license": "MIT",
   "engines": {
     "node": ">=18.0.0"
   }
-}
 }
