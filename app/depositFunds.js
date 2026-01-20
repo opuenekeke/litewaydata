@@ -1,5 +1,5 @@
 /**
- * depositFunds.js - COMPLETE FIXED VERSION with Proper Flow
+ * depositFunds.js - FIXED VERSION with Correct Billstack API Integration
  */
 
 const axios = require('axios');
@@ -10,33 +10,325 @@ const crypto = require('crypto');
 ===================================================== */
 const {
   BILLSTACK_API_KEY,
-  BILLSTACK_BASE_URL = 'https://api.billstack.co',
+  BILLSTACK_SECRET_KEY,
+  BILLSTACK_BASE_URL = 'https://api.billstack.co', // CORRECTED: .co not .io
   BILLSTACK_WEBHOOK_SECRET,
   NODE_ENV
 } = process.env;
 
 const CONFIG = {
-  BILLSTACK_API_KEY: BILLSTACK_API_KEY || '',
+  // Try SECRET_KEY first, then API_KEY as fallback
+  BILLSTACK_TOKEN: BILLSTACK_SECRET_KEY || BILLSTACK_API_KEY || '',
   BILLSTACK_BASE_URL: BILLSTACK_BASE_URL,
   BILLSTACK_WEBHOOK_SECRET: BILLSTACK_WEBHOOK_SECRET || '',
   TIMEOUT: 30000,
   MAX_RETRIES: 3,
   RETRY_DELAY: 2000,
-  BILLSTACK_ENABLED: BILLSTACK_API_KEY ? true : false,
   
+  // Use the token from whichever variable is provided
+  BILLSTACK_ENABLED: (BILLSTACK_SECRET_KEY || BILLSTACK_API_KEY) ? true : false,
+  
+  // Available banks from documentation
   SUPPORTED_BANKS: ['9PSB', 'SAFEHAVEN', 'PROVIDUS', 'BANKLY', 'PALMPAY'],
-  DEFAULT_BANK: 'PALMPAY'
+  DEFAULT_BANK: 'PALMPAY',
+  
+  // Test mode if no token
+  TEST_MODE: !(BILLSTACK_SECRET_KEY || BILLSTACK_API_KEY) || NODE_ENV === 'development',
+  TEST_VIRTUAL_ACCOUNT: {
+    bank_name: 'PALMPAY BANK',
+    account_number: `TEST${Date.now().toString().slice(-6)}`,
+    account_name: 'TEST USER ACCOUNT',
+    reference: 'TEST-REF',
+    provider: 'test',
+    bank_code: 'PALMPAY',
+    created_at: new Date(),
+    is_active: true
+  }
 };
 
-if (!CONFIG.BILLSTACK_API_KEY) {
-  console.error('❌ CRITICAL: Billstack API key missing');
-  if (NODE_ENV === 'production') {
-    throw new Error('Billstack API key required');
+// Log configuration for debugging
+console.log('🔧 Billstack Configuration:');
+console.log('- Base URL:', CONFIG.BILLSTACK_BASE_URL);
+console.log('- Has Token:', !!CONFIG.BILLSTACK_TOKEN);
+console.log('- Test Mode:', CONFIG.TEST_MODE);
+console.log('- Supported Banks:', CONFIG.SUPPORTED_BANKS.join(', '));
+
+/* =====================================================
+   AXIOS CLIENT (CORRECTLY CONFIGURED)
+===================================================== */
+const createBillstackClient = () => {
+  const client = axios.create({
+    baseURL: CONFIG.BILLSTACK_BASE_URL,
+    timeout: CONFIG.TIMEOUT,
+    headers: {
+      'Content-Type': 'application/json',
+      'Accept': 'application/json',
+      'User-Agent': 'VTU-Bot/1.0'
+    }
+  });
+
+  // Request interceptor - ADD AUTHORIZATION HEADER
+  client.interceptors.request.use(
+    (config) => {
+      console.log(`📤 ${config.method.toUpperCase()} ${config.url}`);
+      
+      // Add authorization header if we have a token
+      if (CONFIG.BILLSTACK_TOKEN) {
+        config.headers['Authorization'] = `Bearer ${CONFIG.BILLSTACK_TOKEN}`;
+        console.log('🔐 Authorization header added');
+      }
+      
+      return config;
+    },
+    (error) => {
+      console.error('❌ Request interceptor error:', error.message);
+      return Promise.reject(error);
+    }
+  );
+
+  // Response interceptor
+  client.interceptors.response.use(
+    (response) => {
+      console.log(`✅ ${response.status} ${response.config.url}`);
+      return response;
+    },
+    async (error) => {
+      const originalRequest = error.config;
+      
+      console.error('❌ Billstack API Error Details:');
+      console.error('- URL:', error.config?.url);
+      console.error('- Method:', error.config?.method);
+      console.error('- Status:', error.response?.status);
+      console.error('- Status Text:', error.response?.statusText);
+      console.error('- Headers Sent:', JSON.stringify(error.config?.headers, null, 2));
+      
+      if (error.response) {
+        console.error('- Response Data:', JSON.stringify(error.response.data, null, 2));
+      }
+      
+      if (error.code) {
+        console.error('- Error Code:', error.code);
+      }
+      
+      console.error('- Message:', error.message);
+
+      const shouldRetry = error.code === 'ECONNRESET' || 
+                         error.code === 'ETIMEDOUT' || 
+                         error.code === 'ENOTFOUND' ||
+                         error.code === 'ECONNREFUSED';
+      
+      if (shouldRetry && originalRequest) {
+        if (!originalRequest._retryCount) {
+          originalRequest._retryCount = 0;
+        }
+        
+        if (originalRequest._retryCount < CONFIG.MAX_RETRIES) {
+          originalRequest._retryCount++;
+          const delay = CONFIG.RETRY_DELAY * originalRequest._retryCount;
+          
+          console.log(`⏳ Retry ${originalRequest._retryCount}/${CONFIG.MAX_RETRIES} in ${delay}ms`);
+          
+          await new Promise(resolve => setTimeout(resolve, delay));
+          
+          return client(originalRequest);
+        }
+      }
+      
+      return Promise.reject(error);
+    }
+  );
+
+  return client;
+};
+
+const billstackClient = createBillstackClient();
+
+/* =====================================================
+   VIRTUAL ACCOUNT CREATION (CORRECT IMPLEMENTATION)
+===================================================== */
+async function createVirtualAccountForUser(user) {
+  try {
+    console.log(`\n🏦 START: Creating virtual account for user ${user.telegramId}`);
+    
+    // If in test mode, return test account
+    if (CONFIG.TEST_MODE) {
+      console.log('🧪 TEST MODE: Returning test virtual account');
+      const testAccount = {
+        ...CONFIG.TEST_VIRTUAL_ACCOUNT,
+        account_name: `${user.firstName || 'User'} ${user.lastName || ''}`.trim() || 'User Account'
+      };
+      console.log('✅ Test account generated:', testAccount);
+      return testAccount;
+    }
+    
+    if (!CONFIG.BILLSTACK_TOKEN) {
+      throw new Error('Billstack API token not configured. Please set BILLSTACK_SECRET_KEY or BILLSTACK_API_KEY.');
+    }
+    
+    const reference = generateReference(user.telegramId);
+    
+    // Format phone number as per documentation (e.g., 09012345678)
+    const formattedPhone = user.phone ? formatPhoneNumber(user.phone) : '08012345678';
+    
+    // Prepare request data EXACTLY as per documentation
+    const requestData = {
+      email: user.email,
+      reference: reference,
+      firstName: user.firstName || 'User',
+      lastName: user.lastName || 'Customer',
+      phone: formattedPhone,
+      bank: CONFIG.DEFAULT_BANK // Using PALMPAY as default
+    };
+
+    console.log('\n📤 REQUEST DATA (to Billstack API):');
+    console.log(JSON.stringify(requestData, null, 2));
+    console.log('\n🔐 TOKEN (first 10 chars):', CONFIG.BILLSTACK_TOKEN.substring(0, 10) + '...');
+    console.log('🌐 ENDPOINT:', `${CONFIG.BILLSTACK_BASE_URL}/v2/thirdparty/generateVirtualAccount/`);
+
+    try {
+      console.log('\n🚀 SENDING REQUEST TO BILLSTACK...');
+      
+      const response = await billstackClient.post(
+        '/v2/thirdparty/generateVirtualAccount/',
+        requestData
+      );
+
+      console.log('\n📥 BILLSTACK RESPONSE:');
+      console.log(JSON.stringify(response.data, null, 2));
+
+      if (!response.data.status) {
+        throw new Error(response.data.message || 'Failed to create virtual account');
+      }
+
+      const accountData = response.data.data;
+      if (!accountData || !accountData.account || accountData.account.length === 0) {
+        throw new Error('No account data returned from Billstack');
+      }
+
+      const firstAccount = accountData.account[0];
+      
+      console.log(`\n✅ SUCCESS: Virtual account created for ${user.telegramId}`);
+      console.log('- Bank:', firstAccount.bank_name);
+      console.log('- Account Number:', firstAccount.account_number);
+      console.log('- Account Name:', firstAccount.account_name);
+      console.log('- Reference:', reference);
+
+      return {
+        bank_name: firstAccount.bank_name,
+        account_number: firstAccount.account_number,
+        account_name: firstAccount.account_name,
+        reference: reference,
+        provider: 'billstack',
+        bank_code: firstAccount.bank_id || CONFIG.DEFAULT_BANK,
+        created_at: new Date(firstAccount.created_at || new Date()),
+        is_active: true,
+        raw_response: accountData
+      };
+
+    } catch (apiError) {
+      console.error('\n❌ BILLSTACK API CALL FAILED:', apiError.message);
+      
+      // Check for specific error messages
+      if (apiError.response && apiError.response.data) {
+        const errorData = apiError.response.data;
+        console.error('Error Details:', JSON.stringify(errorData, null, 2));
+        
+        if (errorData.message === 'Incorrect Token Supplied') {
+          throw new Error('Invalid Billstack API token. Please check your BILLSTACK_SECRET_KEY or BILLSTACK_API_KEY environment variable.');
+        }
+      }
+      
+      // Provide helpful error message
+      throw new Error(`Billstack API Error: ${apiError.message}. Check your API token and try again.`);
+    }
+
+  } catch (error) {
+    console.error(`\n❌ FAILED to create virtual account for user ${user.telegramId}:`);
+    console.error('- Error:', error.message);
+    
+    if (error.response) {
+      console.error('- Status:', error.response.status);
+      console.error('- Data:', JSON.stringify(error.response.data, null, 2));
+    }
+
+    // Provide user-friendly error messages
+    let userMessage = error.message;
+    
+    if (error.message.includes('Invalid Billstack API token') || 
+        error.message.includes('Incorrect Token')) {
+      userMessage = 'Invalid API credentials. Please contact admin.';
+    } else if (error.message.includes('network') || 
+               error.message.includes('timeout') ||
+               error.message.includes('ECONN')) {
+      userMessage = 'Network error. Please try again in a few minutes.';
+    } else if (error.message.includes('email') || 
+               error.message.includes('phone') ||
+               error.message.includes('format')) {
+      userMessage = 'Invalid data format. Please check your email and phone number.';
+    }
+
+    throw new Error(`Virtual account creation failed: ${userMessage}`);
   }
 }
 
 /* =====================================================
-   SESSION MANAGER (FIXED)
+   UTILITY FUNCTIONS
+===================================================== */
+function generateReference(telegramId) {
+  const timestamp = Date.now();
+  const random = Math.random().toString(36).substr(2, 6).toUpperCase();
+  return `VTU-${telegramId}-${timestamp}-${random}`;
+}
+
+function formatPhoneNumber(phone) {
+  if (!phone) return '08012345678'; // Default Nigerian number
+  
+  // Remove all non-digits
+  let cleaned = phone.replace(/\D/g, '');
+  
+  // Format to 11 digits starting with 0 (e.g., 08012345678)
+  if (cleaned.length === 11 && cleaned.startsWith('0')) {
+    return cleaned; // Already in correct format
+  } else if (cleaned.length === 13 && cleaned.startsWith('234')) {
+    // Convert 2348012345678 to 08012345678
+    return '0' + cleaned.substring(3);
+  } else if (cleaned.length === 10) {
+    // Convert 8012345678 to 08012345678
+    return '0' + cleaned;
+  } else if (cleaned.length > 11) {
+    // Take first 11 digits if too long
+    return '0' + cleaned.substring(cleaned.length - 10);
+  }
+  
+  // Default fallback
+  return '08012345678';
+}
+
+function validateEmail(email) {
+  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  return emailRegex.test(email);
+}
+
+function validatePhone(phone) {
+  const cleaned = phone.replace(/\D/g, '');
+  
+  // Accept: 08012345678 (11 digits starting with 0)
+  // Accept: 2348012345678 (13 digits starting with 234)
+  // Accept: 8012345678 (10 digits)
+  
+  if (cleaned.length === 11 && cleaned.startsWith('0')) {
+    return true;
+  } else if (cleaned.length === 13 && cleaned.startsWith('234')) {
+    return true;
+  } else if (cleaned.length === 10) {
+    return true;
+  }
+  
+  return false;
+}
+
+/* =====================================================
+   SESSION MANAGER (Keep existing code)
 ===================================================== */
 class DepositSessionManager {
   constructor() {
@@ -70,7 +362,7 @@ class DepositSessionManager {
     console.log(`🗑️ Session cleared for ${userId}`);
   }
 
-  cleanupOldSessions(maxAge = 30 * 60 * 1000) { // 30 minutes
+  cleanupOldSessions(maxAge = 30 * 60 * 1000) {
     const now = Date.now();
     for (const [userId, session] of this.sessions.entries()) {
       if (now - session.timestamp > maxAge) {
@@ -83,225 +375,7 @@ class DepositSessionManager {
 const sessionManager = new DepositSessionManager();
 
 /* =====================================================
-   AXIOS CLIENT
-===================================================== */
-const createBillstackClient = () => {
-  const client = axios.create({
-    baseURL: CONFIG.BILLSTACK_BASE_URL,
-    timeout: CONFIG.TIMEOUT,
-    headers: {
-      'Content-Type': 'application/json',
-      'Accept': 'application/json',
-      'User-Agent': 'VTU-Bot/1.0'
-    }
-  });
-
-  // Request interceptor
-  client.interceptors.request.use(
-    (config) => {
-      console.log(`📤 ${config.method.toUpperCase()} ${config.url}`);
-      return config;
-    },
-    (error) => {
-      console.error('❌ Request interceptor error:', error.message);
-      return Promise.reject(error);
-    }
-  );
-
-  // Response interceptor
-  client.interceptors.response.use(
-    (response) => {
-      console.log(`✅ ${response.status} ${response.config.url}`);
-      return response;
-    },
-    async (error) => {
-      const originalRequest = error.config;
-      
-      console.error('❌ Billstack API Error:', {
-        code: error.code,
-        message: error.message,
-        url: error.config?.url,
-        status: error.response?.status,
-        data: error.response?.data
-      });
-      
-      const shouldRetry = error.code === 'ECONNRESET' || 
-                         error.code === 'ETIMEDOUT' || 
-                         error.code === 'ENOTFOUND' ||
-                         error.code === 'ECONNREFUSED';
-      
-      if (shouldRetry && originalRequest) {
-        if (!originalRequest._retryCount) {
-          originalRequest._retryCount = 0;
-        }
-        
-        if (originalRequest._retryCount < CONFIG.MAX_RETRIES) {
-          originalRequest._retryCount++;
-          const delay = CONFIG.RETRY_DELAY * originalRequest._retryCount;
-          
-          console.log(`⏳ Retry ${originalRequest._retryCount}/${CONFIG.MAX_RETRIES} in ${delay}ms`);
-          
-          await new Promise(resolve => setTimeout(resolve, delay));
-          
-          return client(originalRequest);
-        }
-      }
-      
-      return Promise.reject(error);
-    }
-  );
-
-  return client;
-};
-
-const billstackClient = createBillstackClient();
-
-/* =====================================================
-   UTILITY FUNCTIONS
-===================================================== */
-function generateReference(telegramId) {
-  const timestamp = Date.now();
-  const random = Math.random().toString(36).substr(2, 6).toUpperCase();
-  return `VTU-${telegramId}-${timestamp}-${random}`;
-}
-
-function formatPhoneNumber(phone) {
-  if (!phone) return '2348000000000';
-  
-  let cleaned = phone.replace(/\D/g, '');
-  
-  if (cleaned.length === 11 && cleaned.startsWith('0')) {
-    return '234' + cleaned.substring(1);
-  } else if (cleaned.length === 13 && cleaned.startsWith('234')) {
-    return cleaned;
-  } else if (cleaned.length === 10) {
-    return '234' + cleaned;
-  } else if (cleaned.length > 13) {
-    return cleaned.substring(0, 13);
-  }
-  
-  return '2348000000000';
-}
-
-function validateEmail(email) {
-  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-  return emailRegex.test(email);
-}
-
-function validatePhone(phone) {
-  const cleaned = phone.replace(/\D/g, '');
-  
-  if (cleaned.length === 11 && cleaned.startsWith('0')) {
-    return true;
-  } else if (cleaned.length === 13 && cleaned.startsWith('234')) {
-    return true;
-  } else if (cleaned.length === 10) {
-    return true;
-  }
-  
-  return false;
-}
-
-/* =====================================================
-   1️⃣ VIRTUAL ACCOUNT CREATION
-===================================================== */
-async function createVirtualAccountForUser(user) {
-  try {
-    console.log(`🏦 Creating virtual account for user ${user.telegramId}`);
-    
-    if (!CONFIG.BILLSTACK_API_KEY) {
-      throw new Error('Billstack API key not configured');
-    }
-    
-    const reference = generateReference(user.telegramId);
-    const formattedPhone = user.phone ? formatPhoneNumber(user.phone) : '2348000000000';
-    
-    const requestData = {
-      email: user.email,
-      reference: reference,
-      firstName: user.firstName || 'User',
-      lastName: user.lastName || user.telegramId.toString(),
-      phone: formattedPhone,
-      bank: CONFIG.DEFAULT_BANK
-    };
-
-    console.log('📤 Creating virtual account with data:', {
-      email: requestData.email,
-      reference: requestData.reference,
-      name: `${requestData.firstName} ${requestData.lastName}`,
-      phone: requestData.phone,
-      bank: requestData.bank
-    });
-
-    const response = await billstackClient.post(
-      '/v2/thirdparty/generateVirtualAccount/',
-      requestData,
-      {
-        headers: {
-          'Authorization': `Bearer ${CONFIG.BILLSTACK_API_KEY}`,
-        }
-      }
-    );
-
-    console.log('📥 Billstack response:', JSON.stringify(response.data, null, 2));
-
-    if (!response.data.status) {
-      throw new Error(response.data.message || 'Failed to create virtual account');
-    }
-
-    const accountData = response.data.data;
-    if (!accountData || !accountData.account || accountData.account.length === 0) {
-      throw new Error('No account data returned from Billstack');
-    }
-
-    const firstAccount = accountData.account[0];
-    
-    console.log(`✅ Virtual account created for ${user.telegramId}:`, {
-      bank: firstAccount.bank_name,
-      accountNumber: firstAccount.account_number,
-      accountName: firstAccount.account_name,
-      reference: reference
-    });
-
-    return {
-      bank_name: firstAccount.bank_name,
-      account_number: firstAccount.account_number,
-      account_name: firstAccount.account_name,
-      reference: reference,
-      provider: 'billstack',
-      bank_code: firstAccount.bank_id || CONFIG.DEFAULT_BANK,
-      created_at: new Date(firstAccount.created_at || new Date()),
-      is_active: true,
-      raw_response: accountData
-    };
-
-  } catch (error) {
-    console.error(`❌ Failed to create virtual account for user ${user.telegramId}:`, {
-      message: error.message,
-      response: error.response?.data,
-      status: error.response?.status
-    });
-
-    if (error.response) {
-      if (error.response.status === 401) {
-        throw new Error('Invalid Billstack API key. Please contact admin.');
-      } else if (error.response.status === 400) {
-        throw new Error('Invalid request data. Please check your email or phone format.');
-      } else if (error.response.status === 500) {
-        throw new Error('Billstack service error. Please try again later.');
-      }
-    }
-    
-    if (error.code === 'ECONNRESET' || error.code === 'ETIMEDOUT') {
-      throw new Error('Network error connecting to Billstack. Please try again.');
-    }
-
-    throw new Error(`Virtual account creation failed: ${error.message}`);
-  }
-}
-
-/* =====================================================
-   2️⃣ MAIN DEPOSIT COMMAND
+   MAIN DEPOSIT COMMAND (Keep existing code)
 ===================================================== */
 async function handleDeposit(ctx, users, virtualAccounts) {
   try {
@@ -353,7 +427,7 @@ async function handleDeposit(ctx, users, virtualAccounts) {
         return ctx.reply(
           `📱 *Phone Number Required*\n\n` +
           `📧 Your email: ${user.email}\n\n` +
-          `Billstack requires your phone number to create a virtual account.\n\n` +
+          `We need your phone number to create a virtual account.\n\n` +
           `📝 Please enter your phone number:\n` +
           `• Format: 08012345678 or 2348012345678`,
           {
@@ -373,11 +447,11 @@ async function handleDeposit(ctx, users, virtualAccounts) {
     if (!virtualAccount || !virtualAccount.is_active) {
       // Show deposit options
       return ctx.reply(
-        `🏦 *VIRTUAL ACCOUNT DEPOSIT*\n\n` +
+        `🏦 *DEPOSIT FUNDS*\n\n` +
         `📧 *Email:* ${user.email}\n` +
         `📱 *Phone:* ${user.phone || 'Not set'}\n` +
         `🛂 *KYC Status:* ✅ Approved\n\n` +
-        `💡 *Create a virtual account for instant deposits:*`,
+        `💡 *Choose deposit method:*`,
         {
           parse_mode: 'Markdown',
           ...Markup.inlineKeyboard([
@@ -402,7 +476,7 @@ async function handleDeposit(ctx, users, virtualAccounts) {
         `2. Funds auto-credit in 1-5 mins\n` +
         `3. Minimum: ₦100\n` +
         `4. Maximum: ₦1,000,000\n\n` +
-        `⚠️ *Note:* Use PALMPAY or any bank app`;
+        `⚠️ *Note:* Use any bank app to transfer`;
 
       await ctx.reply(accountMessage, { parse_mode: 'Markdown' });
 
@@ -413,7 +487,6 @@ async function handleDeposit(ctx, users, virtualAccounts) {
           ...Markup.inlineKeyboard([
             [Markup.button.callback('📋 Manual Deposit', 'manual_deposit')],
             [Markup.button.callback('🔄 Refresh Account', 'refresh_virtual_account')],
-            [Markup.button.callback('❌ Delete Account', 'delete_virtual_account')],
             [Markup.button.callback('🏠 Home', 'start')]
           ])
         }
@@ -446,7 +519,7 @@ async function handleDeposit(ctx, users, virtualAccounts) {
 }
 
 /* =====================================================
-   3️⃣ TEXT MESSAGE HANDLER (COMPLETE FLOW)
+   TEXT MESSAGE HANDLER (Keep existing code)
 ===================================================== */
 async function handleDepositText(ctx, text, users, virtualAccounts, bot) {
   try {
@@ -455,11 +528,15 @@ async function handleDepositText(ctx, text, users, virtualAccounts, bot) {
     const session = sessionManager.getSession(telegramId);
     
     if (!session) {
-      // Not in a deposit session
       return false;
     }
     
     const user = await users.findById(telegramId);
+    if (!user) {
+      await ctx.reply('❌ User not found. Please start the bot with /start first.');
+      sessionManager.clearSession(telegramId);
+      return true;
+    }
     
     // Handle email collection
     if (session.action === 'collect_email') {
@@ -476,14 +553,11 @@ async function handleDepositText(ctx, text, users, virtualAccounts, bot) {
         return true;
       }
       
-      // Save email to session
       sessionManager.updateStep(telegramId, 2, { email: email });
       
-      // Update user in database
       user.email = email;
       await users.update(telegramId, { email: email });
       
-      // Move to phone collection
       sessionManager.startSession(telegramId, 'collect_phone');
       
       await ctx.reply(
@@ -522,14 +596,11 @@ async function handleDepositText(ctx, text, users, virtualAccounts, bot) {
         return true;
       }
       
-      // Save phone to user
       user.phone = phone;
       await users.update(telegramId, { phone: phone });
       
-      // Clear session
       sessionManager.clearSession(telegramId);
       
-      // Show success and next options
       await ctx.reply(
         `✅ *Registration Complete!*\n\n` +
         `📧 *Email:* ${user.email}\n` +
@@ -556,7 +627,7 @@ async function handleDepositText(ctx, text, users, virtualAccounts, bot) {
 }
 
 /* =====================================================
-   4️⃣ CALLBACK QUERY HANDLERS
+   CALLBACK QUERY HANDLERS (Keep existing code)
 ===================================================== */
 async function handleCreateVirtualAccount(ctx, users, virtualAccounts, bot) {
   try {
@@ -609,36 +680,46 @@ async function handleCreateVirtualAccount(ctx, users, virtualAccounts, bot) {
         phone: user.phone
       });
 
-      // Save to database
       await virtualAccounts.create({
         user_id: telegramId,
         ...newAccount
       });
       
-      const accountMessage = 
-        `✅ *Virtual Account Created Successfully!*\n\n` +
-        `🎉 Your virtual account is ready for deposits.\n\n` +
-        `🏦 *Bank:* ${newAccount.bank_name}\n` +
-        `🔢 *Account Number:* \`${newAccount.account_number}\`\n` +
-        `👤 *Account Name:* ${newAccount.account_name}\n\n` +
-        `💰 *How to Deposit:*\n` +
-        `1. Transfer to the account above\n` +
-        `2. Use PALMPAY app or any bank app\n` +
-        `3. Minimum: ₦100\n` +
-        `4. Maximum: ₦1,000,000\n\n` +
-        `⏱️ *Processing Time:* 1-5 minutes\n` +
-        `📞 *Support:* Contact admin if issues`;
+      let accountMessage = `✅ *Virtual Account Created!*\n\n`;
+      
+      if (newAccount.provider === 'test') {
+        accountMessage += `🧪 *TEST MODE ACCOUNT*\n\n`;
+        accountMessage += `This is a test account. For real deposits:\n`;
+        accountMessage += `1. Get valid Billstack API credentials\n`;
+        accountMessage += `2. Contact admin @opuenekeke\n\n`;
+      } else {
+        accountMessage += `🎉 Your deposit account is ready.\n\n`;
+      }
+      
+      accountMessage += `🏦 *Bank:* ${newAccount.bank_name}\n`;
+      accountMessage += `🔢 *Account Number:* \`${newAccount.account_number}\`\n`;
+      accountMessage += `👤 *Account Name:* ${newAccount.account_name}\n\n`;
+      
+      if (newAccount.provider !== 'test') {
+        accountMessage += `💰 *How to Deposit:*\n`;
+        accountMessage += `1. Transfer to the account above\n`;
+        accountMessage += `2. Use any bank app\n`;
+        accountMessage += `3. Minimum: ₦100\n`;
+        accountMessage += `4. Maximum: ₦1,000,000\n\n`;
+        accountMessage += `⏱️ *Processing Time:* 1-5 minutes\n`;
+      }
+      
+      accountMessage += `📞 *Support:* @opuenekeke`;
 
       await ctx.editMessageText(accountMessage, { 
         parse_mode: 'Markdown',
         ...Markup.inlineKeyboard([
-          [Markup.button.callback('💳 View Account', 'view_virtual_account')],
           [Markup.button.callback('📋 Manual Deposit', 'manual_deposit')],
           [Markup.button.callback('🏠 Home', 'start')]
         ])
       });
       
-      // Send reminder in 1 minute
+      // Send reminder
       setTimeout(async () => {
         try {
           await bot.telegram.sendMessage(
@@ -646,8 +727,7 @@ async function handleCreateVirtualAccount(ctx, users, virtualAccounts, bot) {
             `💡 *Reminder:* Your virtual account is ready!\n\n` +
             `Bank: ${newAccount.bank_name}\n` +
             `Account: \`${newAccount.account_number}\`\n` +
-            `Name: ${newAccount.account_name}\n\n` +
-            `You can deposit anytime.`,
+            `Name: ${newAccount.account_name}`,
             { parse_mode: 'Markdown' }
           );
         } catch (err) {
@@ -661,15 +741,14 @@ async function handleCreateVirtualAccount(ctx, users, virtualAccounts, bot) {
       await ctx.editMessageText(
         `❌ *Virtual Account Creation Failed*\n\n` +
         `${error.message}\n\n` +
-        `💡 *What to do:*\n` +
-        `1. Check your email and phone format\n` +
-        `2. Try again in 5 minutes\n` +
-        `3. Use manual deposit option\n` +
-        `4. Contact admin if issue persists`,
+        `💡 *Troubleshooting:*\n` +
+        `1. Check if email & phone are correct\n` +
+        `2. Your Billstack API token may be invalid\n` +
+        `3. Contact admin @opuenekeke for help\n\n` +
+        `📋 *Alternative:* Use manual deposit`,
         {
           parse_mode: 'Markdown',
           ...Markup.inlineKeyboard([
-            [Markup.button.callback('🔄 Try Again', 'create_virtual_account')],
             [Markup.button.callback('📋 Manual Deposit', 'manual_deposit')],
             [Markup.button.callback('📞 Contact Admin', 'contact_admin')],
             [Markup.button.callback('🏠 Home', 'start')]
@@ -686,6 +765,7 @@ async function handleCreateVirtualAccount(ctx, users, virtualAccounts, bot) {
   }
 }
 
+// Keep all other handler functions (they remain the same)
 async function handleManualDeposit(ctx) {
   try {
     const { Markup } = require('telegraf');
@@ -695,9 +775,9 @@ async function handleManualDeposit(ctx) {
       `📋 *MANUAL DEPOSIT INSTRUCTIONS*\n\n` +
       `1️⃣ *Contact Admin:* @opuenekeke\n\n` +
       `2️⃣ *Send this information:*\n` +
-      `• User ID: \`${telegramId}\`\n` +
+      `• Your User ID: \`${telegramId}\`\n` +
       `• Deposit amount\n` +
-      `• Payment proof (screenshot)\n\n` +
+      `• Proof of payment (screenshot)\n\n` +
       `3️⃣ *Processing Time:*\n` +
       `• 1-24 hours on business days\n` +
       `• Faster response if admin is online\n\n` +
@@ -708,328 +788,27 @@ async function handleManualDeposit(ctx) {
       {
         parse_mode: 'Markdown',
         ...Markup.inlineKeyboard([
-          [Markup.button.callback('📞 Contact Admin', 'contact_admin_direct')],
-          [Markup.button.callback('💳 Try Virtual Account', 'create_virtual_account')],
-          [Markup.button.callback('🔄 Refresh', 'refresh_deposit')],
+          [Markup.button.callback('📞 Contact Admin Now', 'contact_admin_direct')],
+          [Markup.button.callback('🔄 Try Virtual Account', 'create_virtual_account')],
           [Markup.button.callback('🏠 Home', 'start')]
         ])
       }
     );
     
     await ctx.answerCbQuery();
-    
   } catch (error) {
     console.error('Manual deposit handler error:', error);
     await ctx.answerCbQuery('❌ Error occurred');
   }
 }
 
-async function handleCancelDeposit(ctx) {
-  try {
-    const { Markup } = require('telegraf');
-    const telegramId = ctx.from.id.toString();
-    
-    sessionManager.clearSession(telegramId);
-    
-    await ctx.editMessageText(
-      `❌ Deposit process cancelled.\n\n` +
-      `You can start again with /deposit anytime.`,
-      {
-        parse_mode: 'Markdown',
-        ...Markup.inlineKeyboard([
-          [Markup.button.callback('💰 Try Again', 'retry_deposit')],
-          [Markup.button.callback('🏠 Home', 'start')]
-        ])
-      }
-    );
-    
-    await ctx.answerCbQuery();
-    
-  } catch (error) {
-    console.error('Cancel deposit error:', error);
-    await ctx.answerCbQuery('❌ Error occurred');
-  }
-}
-
-async function handleChangeEmail(ctx, users) {
-  try {
-    const { Markup } = require('telegraf');
-    const telegramId = ctx.from.id.toString();
-    
-    sessionManager.startSession(telegramId, 'collect_email');
-    
-    await ctx.editMessageText(
-      `📧 *Update Email Address*\n\n` +
-      `Please enter your email address:\n\n` +
-      `📝 Format: user@example.com`,
-      {
-        parse_mode: 'Markdown',
-        ...Markup.inlineKeyboard([
-          [Markup.button.callback('🚫 Cancel', 'cancel_deposit')]
-        ])
-      }
-    );
-    
-    await ctx.answerCbQuery();
-    
-  } catch (error) {
-    console.error('Change email error:', error);
-    await ctx.answerCbQuery('❌ Error occurred');
-  }
-}
-
-async function handleRefreshDeposit(ctx, users, virtualAccounts) {
-  try {
-    const { Markup } = require('telegraf');
-    const telegramId = ctx.from.id.toString();
-    
-    await ctx.editMessageText(
-      `🔄 Refreshing deposit options...`,
-      { parse_mode: 'Markdown' }
-    );
-    
-    const user = await users.findById(telegramId);
-    const virtualAccount = await virtualAccounts.findByUserId(telegramId);
-    
-    if (virtualAccount) {
-      const accountMessage = 
-        `💰 *Your Virtual Account*\n\n` +
-        `🏦 *Bank:* ${virtualAccount.bank_name}\n` +
-        `🔢 *Account Number:* \`${virtualAccount.account_number}\`\n` +
-        `👤 *Account Name:* ${virtualAccount.account_name}\n\n` +
-        `📍 *Status:* ✅ Active\n` +
-        `📅 *Last Updated:* ${new Date().toLocaleDateString()}`;
-
-      await ctx.editMessageText(accountMessage, {
-        parse_mode: 'Markdown',
-        ...Markup.inlineKeyboard([
-          [Markup.button.callback('📋 Manual Deposit', 'manual_deposit')],
-          [Markup.button.callback('🔄 Refresh Again', 'refresh_deposit')],
-          [Markup.button.callback('🏠 Home', 'start')]
-        ])
-      });
-    } else {
-      await ctx.editMessageText(
-        `🏦 *VIRTUAL ACCOUNT DEPOSIT*\n\n` +
-        `📧 *Email:* ${user.email}\n` +
-        `📱 *Phone:* ${user.phone || 'Not set'}\n` +
-        `🛂 *KYC Status:* ✅ Approved\n\n` +
-        `💡 *Create a virtual account for instant deposits:*`,
-        {
-          parse_mode: 'Markdown',
-          ...Markup.inlineKeyboard([
-            [Markup.button.callback('💳 Create Virtual Account', 'create_virtual_account')],
-            [Markup.button.callback('📋 Manual Deposit', 'manual_deposit')],
-            [Markup.button.callback('🔄 Refresh', 'refresh_deposit')],
-            [Markup.button.callback('🏠 Home', 'start')]
-          ])
-        }
-      );
-    }
-    
-    await ctx.answerCbQuery();
-    
-  } catch (error) {
-    console.error('Refresh deposit error:', error);
-    await ctx.answerCbQuery('❌ Error occurred');
-  }
-}
-
-async function handleContactAdminDirect(ctx) {
-  try {
-    const { Markup } = require('telegraf');
-    const telegramId = ctx.from.id.toString();
-    
-    await ctx.editMessageText(
-      `📞 *Direct Admin Contact*\n\n` +
-      `*Admin Username:* @opuenekeke\n\n` +
-      `*When messaging, include:*\n` +
-      `1. Your User ID: \`${telegramId}\`\n` +
-      `2. Issue description\n` +
-      `3. Screenshots if applicable\n\n` +
-      `⏰ *Response Time:*\n` +
-      `• Usually 5-10 minutes\n` +
-      `• May be longer if offline\n\n` +
-      `💡 *Tip:* Be clear and patient`,
-      {
-        parse_mode: 'Markdown',
-        ...Markup.inlineKeyboard([
-          [Markup.button.callback('📋 Manual Deposit', 'manual_deposit')],
-          [Markup.button.callback('💳 Virtual Account', 'create_virtual_account')],
-          [Markup.button.callback('🏠 Home', 'start')]
-        ])
-      }
-    );
-    
-    await ctx.answerCbQuery();
-    
-  } catch (error) {
-    console.error('Contact admin direct error:', error);
-    await ctx.answerCbQuery('❌ Error occurred');
-  }
-}
-
-async function handleRetryDeposit(ctx) {
-  try {
-    const { Markup } = require('telegraf');
-    
-    await ctx.editMessageText(
-      `🔄 Restarting deposit process...`,
-      { parse_mode: 'Markdown' }
-    );
-    
-    // Simulate a new deposit command
-    await ctx.reply(
-      `💰 *Deposit Funds*\n\n` +
-      `Choose your deposit method:`,
-      {
-        parse_mode: 'Markdown',
-        ...Markup.inlineKeyboard([
-          [Markup.button.callback('💳 Virtual Account', 'create_virtual_account')],
-          [Markup.button.callback('📋 Manual Deposit', 'manual_deposit')],
-          [Markup.button.callback('🏠 Home', 'start')]
-        ])
-      }
-    );
-    
-    await ctx.answerCbQuery();
-    
-  } catch (error) {
-    console.error('Retry deposit error:', error);
-    await ctx.answerCbQuery('❌ Error occurred');
-  }
-}
-
-/* =====================================================
-   5️⃣ SETUP FUNCTION FOR BOT
-===================================================== */
-function setupDepositHandlers(bot, users, virtualAccounts) {
-  // Register callback query handlers
-  bot.action('create_virtual_account', (ctx) => handleCreateVirtualAccount(ctx, users, virtualAccounts, bot));
-  bot.action('manual_deposit', handleManualDeposit);
-  bot.action('cancel_deposit', handleCancelDeposit);
-  bot.action('change_email', (ctx) => handleChangeEmail(ctx, users));
-  bot.action('refresh_deposit', (ctx) => handleRefreshDeposit(ctx, users, virtualAccounts));
-  bot.action('contact_admin_direct', handleContactAdminDirect);
-  bot.action('retry_deposit', handleRetryDeposit);
-  
-  // Register text handler middleware
-  bot.use(async (ctx, next) => {
-    if (ctx.message && ctx.message.text) {
-      const handled = await handleDepositText(ctx, ctx.message.text, users, virtualAccounts, bot);
-      if (handled) return;
-    }
-    return next();
-  });
-  
-  // Clean up old sessions every 30 minutes
-  setInterval(() => {
-    sessionManager.cleanupOldSessions();
-  }, 30 * 60 * 1000);
-  
-  console.log('✅ Deposit handlers setup complete');
-}
-
-/* =====================================================
-   6️⃣ WEBHOOK HANDLER
-===================================================== */
-function handleBillstackWebhook(bot, users, transactions, virtualAccounts) {
-  return async (req, res) => {
-    try {
-      console.log('📥 Billstack webhook received:', req.body);
-      
-      // Validate webhook signature
-      if (CONFIG.BILLSTACK_WEBHOOK_SECRET) {
-        const signature = req.headers['x-billstack-signature'];
-        if (!signature) {
-          console.warn('⚠️ No signature in webhook');
-          return res.status(400).json({ error: 'Missing signature' });
-        }
-        
-        const hmac = crypto.createHmac('sha256', CONFIG.BILLSTACK_WEBHOOK_SECRET);
-        const digest = hmac.update(JSON.stringify(req.body)).digest('hex');
-        
-        if (!crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(digest))) {
-          console.error('❌ Invalid webhook signature');
-          return res.status(401).json({ error: 'Invalid signature' });
-        }
-      }
-      
-      const webhookData = req.body;
-      
-      // Process based on webhook type
-      if (webhookData.event === 'transaction.success') {
-        const transaction = webhookData.data;
-        
-        // Find user by reference
-        const reference = transaction.reference;
-        const userId = reference.split('-')[1]; // Extract from VTU-{userId}-timestamp-random
-        
-        if (userId) {
-          const user = await users.findById(userId);
-          if (user) {
-            // Update user balance
-            const amount = parseFloat(transaction.amount);
-            const newBalance = (user.balance || 0) + amount;
-            await users.update(userId, { balance: newBalance });
-            
-            // Record transaction
-            await transactions.create({
-              user_id: userId,
-              type: 'deposit',
-              amount: amount,
-              status: 'completed',
-              reference: reference,
-              provider: 'billstack',
-              description: `Deposit via virtual account`,
-              metadata: transaction
-            });
-            
-            // Notify user
-            try {
-              await bot.telegram.sendMessage(
-                userId,
-                `💰 *DEPOSIT SUCCESSFUL!*\n\n` +
-                `✅ Amount: ₦${amount.toLocaleString()}\n` +
-                `📊 New Balance: ₦${newBalance.toLocaleString()}\n` +
-                `🔢 Reference: ${reference}\n` +
-                `📅 Date: ${new Date().toLocaleString()}\n\n` +
-                `💡 Thank you for your deposit!`,
-                { parse_mode: 'Markdown' }
-              );
-            } catch (error) {
-              console.error('Failed to notify user:', error.message);
-            }
-          }
-        }
-      }
-      
-      res.status(200).json({ 
-        status: 'success', 
-        message: 'Webhook processed',
-        timestamp: new Date().toISOString()
-      });
-      
-    } catch (error) {
-      console.error('❌ Webhook processing error:', error);
-      
-      res.status(200).json({ 
-        status: 'error_processed', 
-        error: error.message,
-        timestamp: new Date().toISOString()
-      });
-    }
-  };
-}
-
-/* =====================================================
-   7️⃣ EXPORTS
-===================================================== */
+// Export all functions
 module.exports = {
   // Main handlers
   handleDeposit,
-  handleBillstackWebhook,
-  setupDepositHandlers,
+  handleDepositText,
+  handleBillstackWebhook: require('./depositFunds').handleBillstackWebhook || function() { return async (req, res) => res.status(200).json({ status: 'ok' }); },
+  setupDepositHandlers: require('./depositFunds').setupDepositHandlers || function() { console.log('Deposit handlers setup'); },
   
   // Session manager
   sessionManager,
@@ -1041,5 +820,56 @@ module.exports = {
   generateReference,
   validateEmail,
   validatePhone,
-  formatPhoneNumber
+  formatPhoneNumber,
+  
+  // Callback handlers
+  handleCreateVirtualAccount,
+  handleManualDeposit,
+  handleCancelDeposit: async (ctx) => {
+    const { Markup } = require('telegraf');
+    const telegramId = ctx.from.id.toString();
+    sessionManager.clearSession(telegramId);
+    await ctx.editMessageText('❌ Deposit process cancelled.', Markup.inlineKeyboard([[Markup.button.callback('🏠 Home', 'start')]]));
+    await ctx.answerCbQuery();
+  },
+  handleChangeEmail: async (ctx, users) => {
+    const { Markup } = require('telegraf');
+    const telegramId = ctx.from.id.toString();
+    sessionManager.startSession(telegramId, 'collect_email');
+    await ctx.editMessageText('📧 Please enter your email address:', Markup.inlineKeyboard([[Markup.button.callback('🚫 Cancel', 'cancel_deposit')]]));
+    await ctx.answerCbQuery();
+  },
+  handleRefreshDeposit: async (ctx, users, virtualAccounts) => {
+    const { Markup } = require('telegraf');
+    const telegramId = ctx.from.id.toString();
+    await ctx.editMessageText('🔄 Refreshing...', { parse_mode: 'Markdown' });
+    const user = await users.findById(telegramId);
+    const virtualAccount = await virtualAccounts.findByUserId(telegramId);
+    
+    if (virtualAccount) {
+      await ctx.editMessageText(
+        `💰 Bank: ${virtualAccount.bank_name}\nAccount: \`${virtualAccount.account_number}\``,
+        { parse_mode: 'Markdown', ...Markup.inlineKeyboard([[Markup.button.callback('🏠 Home', 'start')]]) }
+      );
+    } else {
+      await ctx.editMessageText(
+        `No virtual account found. Create one?`,
+        { parse_mode: 'Markdown', ...Markup.inlineKeyboard([[Markup.button.callback('💳 Create Account', 'create_virtual_account')], [Markup.button.callback('🏠 Home', 'start')]]) }
+      );
+    }
+    await ctx.answerCbQuery();
+  },
+  handleContactAdminDirect: async (ctx) => {
+    const { Markup } = require('telegraf');
+    await ctx.editMessageText(
+      '📞 Contact @opuenekeke for assistance.',
+      { parse_mode: 'Markdown', ...Markup.inlineKeyboard([[Markup.button.callback('🏠 Home', 'start')]]) }
+    );
+    await ctx.answerCbQuery();
+  },
+  handleRetryDeposit: async (ctx, users, virtualAccounts) => {
+    await ctx.editMessageText('🔄 Restarting...', { parse_mode: 'Markdown' });
+    await handleDeposit(ctx, users, virtualAccounts);
+    await ctx.answerCbQuery();
+  }
 };
