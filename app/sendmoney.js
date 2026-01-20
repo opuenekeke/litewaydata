@@ -20,7 +20,7 @@ const sessionManager = {
 
   start(userId) {
     this.sessions[userId] = {
-      action: 'send_money',
+      action: 'bank_transfer',
       step: 1,
       data: {},
       createdAt: Date.now()
@@ -43,7 +43,8 @@ const sessionManager = {
 };
 
 /* ===================== HELPERS ===================== */
-const formatCurrency = amt => `₦${Number(amt).toLocaleString('en-NG')}`;
+const formatCurrency = amt =>
+  `₦${Number(amt).toLocaleString('en-NG')}`;
 
 const escapeMarkdown = txt =>
   typeof txt === 'string'
@@ -78,17 +79,20 @@ async function getBanks() {
     const token = await getMonnifyToken();
     const res = await axios.get(
       `${CONFIG.MONNIFY_BASE_URL}/api/v1/banks`,
-      { headers: { Authorization: `Bearer ${token}` }, timeout: 15000 }
+      {
+        headers: { Authorization: `Bearer ${token}` },
+        timeout: 15000
+      }
     );
     return res.data.responseBody;
   } catch {
     return [
-      { code: "058", name: "GTBank" },
-      { code: "044", name: "Access Bank" },
-      { code: "033", name: "UBA" },
-      { code: "057", name: "Zenith Bank" },
-      { code: "011", name: "First Bank" },
-      { code: "232", name: "Sterling Bank" }
+      { code: '058', name: 'GTBank' },
+      { code: '044', name: 'Access Bank' },
+      { code: '033', name: 'UBA' },
+      { code: '057', name: 'Zenith Bank' },
+      { code: '011', name: 'First Bank' },
+      { code: '232', name: 'Sterling Bank' }
     ];
   }
 }
@@ -108,7 +112,9 @@ async function resolveAccount(accountNumber, bankCode) {
   } catch (e) {
     return {
       success: false,
-      error: e.response?.data?.responseMessage || 'Resolution failed'
+      error:
+        e.response?.data?.responseMessage ||
+        'Account resolution failed'
     };
   }
 }
@@ -140,24 +146,25 @@ async function initiateTransfer(data) {
   } catch (e) {
     return {
       success: false,
-      error: e.response?.data?.responseMessage || 'Transfer failed'
+      error:
+        e.response?.data?.responseMessage ||
+        'Transfer failed'
     };
   }
 }
 
-/* ===================== START SEND MONEY ===================== */
+/* ===================== START TRANSFER ===================== */
 async function handleSendMoney(ctx, users) {
   const userId = ctx.from.id.toString();
   const user = users[userId];
 
-  if (!user)
-    return ctx.reply('❌ Use /start first');
+  if (!user) return ctx.reply('❌ Use /start first');
 
   if (user.pinLocked)
     return ctx.reply('🔒 Account locked. Contact admin.');
 
   if (user.kycStatus !== 'approved')
-    return ctx.reply('❌ KYC required');
+    return ctx.reply('❌ KYC verification required');
 
   if (!user.pin)
     return ctx.reply('❌ Set transaction PIN first');
@@ -176,39 +183,52 @@ async function handleSendMoney(ctx, users) {
   for (let i = 0; i < banks.length; i += 2) {
     buttons.push(
       banks.slice(i, i + 2).map(b =>
-        Markup.button.callback(b.name, `sendmoney_bank_${b.code}`)
+        Markup.button.callback(
+          `🏦 ${b.name}`,
+          `sendmoney_bank_${b.code}`
+        )
       )
     );
   }
 
-  buttons.push([Markup.button.callback('❌ Cancel', 'start')]);
+  buttons.push([
+    Markup.button.callback('❌ Cancel', 'start')
+  ]);
 
   await ctx.reply(
-    `🏦 *Select Bank*\n\nBalance: ${formatCurrency(user.wallet)}`,
-    { parse_mode: 'MarkdownV2', ...Markup.inlineKeyboard(buttons) }
+    `🏦 *Select Bank*\n\n💰 Balance: ${formatCurrency(
+      user.wallet
+    )}`,
+    {
+      parse_mode: 'MarkdownV2',
+      ...Markup.inlineKeyboard(buttons)
+    }
   );
 }
 
 /* ===================== CALLBACKS ===================== */
-function getCallbacks(users, transactions) {
+function getCallbacks(users) {
   return {
     bank: async ctx => {
       const userId = ctx.from.id.toString();
       const bankCode = ctx.match[1];
       const session = sessionManager.get(userId);
 
-      if (!session) return ctx.answerCbQuery('Session expired');
+      if (!session || session.action !== 'bank_transfer')
+        return ctx.answerCbQuery('Session expired');
 
       const banks = await getBanks();
       const bank = banks.find(b => b.code === bankCode);
 
       sessionManager.update(userId, 2, {
         bankCode,
-        bankName: bank?.name || 'Unknown'
+        bankName: bank?.name || 'Unknown Bank'
       });
 
       await ctx.editMessageText(
-        `🏦 ${escapeMarkdown(bank.name)}\n\nEnter 10-digit account number:`,
+        `🏦 *${escapeMarkdown(
+          bank?.name || 'Bank'
+        )}*\n\nEnter *10-digit* account number:`,
         { parse_mode: 'MarkdownV2' }
       );
     }
@@ -216,10 +236,11 @@ function getCallbacks(users, transactions) {
 }
 
 /* ===================== TEXT HANDLER ===================== */
-async function handleText(ctx, text, users, transactions) {
+async function handleText(ctx, text, users) {
   const userId = ctx.from.id.toString();
   const session = sessionManager.get(userId);
-  if (!session) return false;
+  if (!session || session.action !== 'bank_transfer')
+    return false;
 
   const user = users[userId];
 
@@ -228,31 +249,54 @@ async function handleText(ctx, text, users, transactions) {
     if (!/^\d{10}$/.test(text))
       return ctx.reply('❌ Invalid account number');
 
-    sessionManager.update(userId, 3, { accountNumber: text });
+    sessionManager.update(userId, 3, {
+      accountNumber: text
+    });
 
-    const res = await resolveAccount(text, session.data.bankCode);
+    const res = await resolveAccount(
+      text,
+      session.data.bankCode
+    );
 
     if (!res.success) {
       sessionManager.update(userId, 4);
-      return ctx.reply('Enter account name manually:');
+      return ctx.reply(
+        '⚠️ Could not resolve account.\n\nEnter account name manually:'
+      );
     }
 
-    sessionManager.update(userId, 5, { accountName: res.accountName });
-    return ctx.reply(`Enter amount to send:`);
+    sessionManager.update(userId, 5, {
+      accountName: res.accountName
+    });
+
+    return ctx.reply(
+      `✅ *Account Found*\n\n${escapeMarkdown(
+        res.accountName
+      )}\n\nEnter amount:`,
+      { parse_mode: 'MarkdownV2' }
+    );
   }
 
   /* STEP 4 — MANUAL NAME */
   if (session.step === 4) {
-    sessionManager.update(userId, 5, { accountName: text });
-    return ctx.reply('Enter amount to send:');
+    sessionManager.update(userId, 5, {
+      accountName: text
+    });
+    return ctx.reply('Enter amount:');
   }
 
   /* STEP 5 — AMOUNT */
   if (session.step === 5) {
     const amount = Number(text);
-    if (isNaN(amount)) return ctx.reply('Invalid amount');
+    if (
+      isNaN(amount) ||
+      amount < CONFIG.MIN_TRANSFER_AMOUNT ||
+      amount > CONFIG.MAX_TRANSFER_AMOUNT
+    )
+      return ctx.reply('❌ Invalid amount');
 
-    const fee = (amount * CONFIG.TRANSFER_FEE_PERCENTAGE) / 100;
+    const fee =
+      (amount * CONFIG.TRANSFER_FEE_PERCENTAGE) / 100;
     const total = amount + fee;
 
     if (user.wallet < total) {
@@ -260,17 +304,32 @@ async function handleText(ctx, text, users, transactions) {
       return ctx.reply('❌ Insufficient balance');
     }
 
-    sessionManager.update(userId, 6, { amount, fee, total });
-    return ctx.reply('Enter your PIN:');
+    sessionManager.update(userId, 6, {
+      amount,
+      fee,
+      total
+    });
+
+    return ctx.reply(
+      `📋 *Confirm Transfer*\n\nAmount: ${formatCurrency(
+        amount
+      )}\nFee: ${formatCurrency(
+        fee
+      )}\n\nEnter PIN:`,
+      { parse_mode: 'MarkdownV2' }
+    );
   }
 
   /* STEP 6 — PIN + TRANSFER */
   if (session.step === 6) {
     if (text !== user.pin) {
       user.pinAttempts = (user.pinAttempts || 0) + 1;
-      if (user.pinAttempts >= 3) user.pinLocked = true;
+      if (user.pinAttempts >= 3)
+        user.pinLocked = true;
       return ctx.reply('❌ Wrong PIN');
     }
+
+    user.pinAttempts = 0;
 
     const ref = `MTR_${Date.now()}_${userId}`;
     const tx = await initiateTransfer({
@@ -281,14 +340,21 @@ async function handleText(ctx, text, users, transactions) {
       reference: ref
     });
 
-    if (!tx.success)
-      return ctx.reply(`❌ Transfer failed: ${tx.error}`);
+    if (!tx.success) {
+      sessionManager.clear(userId);
+      return ctx.reply(
+        `❌ Transfer failed: ${tx.error}`
+      );
+    }
 
     user.wallet -= session.data.total;
     sessionManager.clear(userId);
 
     return ctx.reply(
-      `✅ Transfer successful\n\nNew balance: ${formatCurrency(user.wallet)}`
+      `✅ *Transfer Successful*\n\nNew Balance: ${formatCurrency(
+        user.wallet
+      )}`,
+      { parse_mode: 'MarkdownV2' }
     );
   }
 
