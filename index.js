@@ -108,11 +108,15 @@ async function saveData(filePath, data) {
   }
 }
 
-// Load initial data
-let users = await loadData(usersFile, {});
-let transactions = await loadData(transactionsFile, {});
-let virtualAccountsData = await loadData(virtualAccountsFile, {});
-let sessions = await loadData(sessionsFile, {});
+// Load initial data - WRAPPED IN ASYNC FUNCTION
+let users, transactions, virtualAccountsData, sessions;
+
+async function initializeData() {
+  users = await loadData(usersFile, {});
+  transactions = await loadData(transactionsFile, {});
+  virtualAccountsData = await loadData(virtualAccountsFile, {});
+  sessions = await loadData(sessionsFile, {});
+}
 
 // Auto-save data every 30 seconds
 setInterval(async () => {
@@ -868,63 +872,74 @@ bot.catch((err, ctx) => {
   }
 });
 
-// ==================== LAUNCH BOT ====================
-bot.launch().then(() => {
-  console.log('🚀 VTU Bot with BILLSTACK VIRTUAL ACCOUNT DEPOSITS!');
-  console.log(`👑 Admin ID: ${CONFIG.ADMIN_ID}`);
-  console.log(`🔑 VTU API Key: ${CONFIG.VTU_API_KEY ? '✅ SET' : '❌ NOT SET'}`);
-  console.log(`🔑 Billstack API Key: ${CONFIG.BILLSTACK_API_KEY ? '✅ SET' : '❌ NOT SET'}`);
-  console.log(`🔐 Billstack Secret Key: ${CONFIG.BILLSTACK_SECRET_KEY ? '✅ SET' : '❌ NOT SET'}`);
-  console.log(`🔑 Monnify API Key: ${CONFIG.MONNIFY_API_KEY ? '✅ SET' : '❌ NOT SET'}`);
-  console.log(`🔐 Monnify Secret Key: ${CONFIG.MONNIFY_SECRET_KEY ? '✅ SET' : '❌ NOT SET'}`);
-  console.log(`🌐 Webhook Server: http://localhost:${WEBHOOK_PORT}/billstack-webhook`);
-  console.log(`💾 Persistent Storage: Enabled (auto-save every 30s)`);
-  
-  if (CONFIG.BILLSTACK_API_KEY && CONFIG.BILLSTACK_SECRET_KEY) {
-    console.log('\n✅ BILLSTACK VIRTUAL ACCOUNT FEATURES:');
-    console.log('1. ✅ Email verification required');
-    console.log('2. ✅ NO BVN required');
-    console.log('3. ✅ Virtual account generation after KYC');
-    console.log('4. ✅ Webhook integration for automatic deposits');
-    console.log('5. ✅ Real-time wallet funding');
-    console.log('6. ✅ WEMA BANK virtual accounts');
-  } else {
-    console.log('\n⚠️ BILLSTACK NOT CONFIGURED:');
-    console.log('1. ⚠️ Add BILLSTACK_API_KEY to environment');
-    console.log('2. ⚠️ Add BILLSTACK_SECRET_KEY to environment');
-    console.log('3. ⚠️ Users can still set email for future use');
+// ==================== MAIN ASYNC FUNCTION ====================
+async function main() {
+  try {
+    // Initialize data
+    await initializeData();
+    
+    // Launch bot
+    bot.launch().then(() => {
+      console.log('🚀 VTU Bot with BILLSTACK VIRTUAL ACCOUNT DEPOSITS!');
+      console.log(`👑 Admin ID: ${CONFIG.ADMIN_ID}`);
+      console.log(`🔑 VTU API Key: ${CONFIG.VTU_API_KEY ? '✅ SET' : '❌ NOT SET'}`);
+      console.log(`🔑 Billstack API Key: ${CONFIG.BILLSTACK_API_KEY ? '✅ SET' : '❌ NOT SET'}`);
+      console.log(`🔐 Billstack Secret Key: ${CONFIG.BILLSTACK_SECRET_KEY ? '✅ SET' : '❌ NOT SET'}`);
+      console.log(`🔑 Monnify API Key: ${CONFIG.MONNIFY_API_KEY ? '✅ SET' : '❌ NOT SET'}`);
+      console.log(`🔐 Monnify Secret Key: ${CONFIG.MONNIFY_SECRET_KEY ? '✅ SET' : '❌ NOT SET'}`);
+      console.log(`🌐 Webhook Server: http://localhost:${WEBHOOK_PORT}/billstack-webhook`);
+      console.log(`💾 Persistent Storage: Enabled (auto-save every 30s)`);
+      
+      if (CONFIG.BILLSTACK_API_KEY && CONFIG.BILLSTACK_SECRET_KEY) {
+        console.log('\n✅ BILLSTACK VIRTUAL ACCOUNT FEATURES:');
+        console.log('1. ✅ Email verification required');
+        console.log('2. ✅ NO BVN required');
+        console.log('3. ✅ Virtual account generation after KYC');
+        console.log('4. ✅ Webhook integration for automatic deposits');
+        console.log('5. ✅ Real-time wallet funding');
+        console.log('6. ✅ WEMA BANK virtual accounts');
+      } else {
+        console.log('\n⚠️ BILLSTACK NOT CONFIGURED:');
+        console.log('1. ⚠️ Add BILLSTACK_API_KEY to environment');
+        console.log('2. ⚠️ Add BILLSTACK_SECRET_KEY to environment');
+        console.log('3. ⚠️ Users can still set email for future use');
+      }
+      
+      if (CONFIG.MONNIFY_API_KEY && CONFIG.MONNIFY_SECRET_KEY) {
+        console.log('\n✅ MONNIFY BANK TRANSFER FEATURES:');
+        console.log('1. ✅ Automatic account resolution');
+        console.log('2. ✅ Real-time bank transfers');
+        console.log('3. ✅ Support for all Nigerian banks');
+        console.log('4. ✅ Secure transaction processing');
+      } else {
+        console.log('\n⚠️ MONNIFY NOT CONFIGURED:');
+        console.log('1. ⚠️ Add MONNIFY_API_KEY to environment');
+        console.log('2. ⚠️ Add MONNIFY_SECRET_KEY to environment');
+        console.log('3. ⚠️ Add MONNIFY_CONTRACT_CODE to environment');
+      }
+      
+      console.log('\n✅ ALL CORE FEATURES WORKING:');
+      console.log('• 📞 Buy Airtime (Working)');
+      console.log('• 📡 Buy Data (Working)');
+      console.log('• 💰 Wallet Balance (Working)');
+      console.log('• 💳 Deposit Funds (Email + Virtual Account)');
+      console.log('• 🏦 Money Transfer (Monnify Integration)');
+      console.log('• 📜 Transaction History (Working)');
+      console.log('• 🛂 KYC Status (Working)');
+      console.log('• 🛠️ Admin Panel (Working)');
+      console.log('• 🆘 Help & Support (Working)');
+      console.log('• 💾 Persistent Storage (Enabled)');
+      console.log('\n⚡ BOT IS READY!');
+    }).catch(err => {
+      console.error('❌ Bot launch failed:', err);
+    });
+    
+  } catch (error) {
+    console.error('❌ Main initialization error:', error);
   }
-  
-  if (CONFIG.MONNIFY_API_KEY && CONFIG.MONNIFY_SECRET_KEY) {
-    console.log('\n✅ MONNIFY BANK TRANSFER FEATURES:');
-    console.log('1. ✅ Automatic account resolution');
-    console.log('2. ✅ Real-time bank transfers');
-    console.log('3. ✅ Support for all Nigerian banks');
-    console.log('4. ✅ Secure transaction processing');
-  } else {
-    console.log('\n⚠️ MONNIFY NOT CONFIGURED:');
-    console.log('1. ⚠️ Add MONNIFY_API_KEY to environment');
-    console.log('2. ⚠️ Add MONNIFY_SECRET_KEY to environment');
-    console.log('3. ⚠️ Add MONNIFY_CONTRACT_CODE to environment');
-  }
-  
-  console.log('\n✅ ALL CORE FEATURES WORKING:');
-  console.log('• 📞 Buy Airtime (Working)');
-  console.log('• 📡 Buy Data (Working)');
-  console.log('• 💰 Wallet Balance (Working)');
-  console.log('• 💳 Deposit Funds (Email + Virtual Account)');
-  console.log('• 🏦 Money Transfer (Monnify Integration)');
-  console.log('• 📜 Transaction History (Working)');
-  console.log('• 🛂 KYC Status (Working)');
-  console.log('• 🛠️ Admin Panel (Working)');
-  console.log('• 🆘 Help & Support (Working)');
-  console.log('• 💾 Persistent Storage (Enabled)');
-  console.log('\n⚡ BOT IS READY!');
-}).catch(err => {
-  console.error('❌ Bot launch failed:', err);
-});
+}
 
-// Graceful shutdown with data save
+// ==================== GRACEFUL SHUTDOWN ====================
 process.once('SIGINT', async () => {
   console.log('\n🛑 Shutting down...');
   
@@ -950,3 +965,6 @@ process.once('SIGTERM', async () => {
   
   bot.stop('SIGTERM');
 });
+
+// Start the application
+main();

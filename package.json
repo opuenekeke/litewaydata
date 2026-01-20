@@ -33,5 +33,10 @@
     "telegram-bot"
   ],
   "author": "Your Name",
-  "license": "MIT"
+  "license": "MIT"{
+  "type": "commonjs",
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
 }

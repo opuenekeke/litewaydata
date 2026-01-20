@@ -31,3 +31,13 @@ services:
       name: vtu-data
       mountPath: /data
       sizeGB: 1
+
+services:
+  - type: web
+    name: vtu-bot
+    env: node
+    buildCommand: npm install
+    startCommand: node index.js
+    envVars:
+      - key: NODE_VERSION
+        value: 18.17.0
