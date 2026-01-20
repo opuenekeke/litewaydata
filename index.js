@@ -1,9 +1,11 @@
-// index.js - FIXED VERSION (Airtime & Data working)
+// index.js - FIXED VERSION (Airtime & Data working) WITH PERSISTENCE
 require('dotenv').config();
 const { Telegraf, Markup } = require('telegraf');
 const axios = require('axios');
 const crypto = require('crypto');
 const express = require('express');
+const fs = require('fs').promises;
+const path = require('path');
 
 // Debug: Check environment variables
 console.log('🔍 ENVIRONMENT VARIABLES DEBUG:');
@@ -40,30 +42,82 @@ const CONFIG = {
   BANK_TRANSFER_ENABLED: process.env.BANK_TRANSFER_API_KEY ? true : false
 };
 
-// Global data storage (shared across modules)
-const users = {};
-const transactions = {};
-const virtualAccounts = {};
+// ==================== PERSISTENT STORAGE SETUP ====================
+console.log('📁 Initializing persistent storage...');
 
-// Session storage for airtime/data modules
-const sessions = {};
+// Create data directory
+const dataDir = path.join(__dirname, 'data');
+const usersFile = path.join(dataDir, 'users.json');
+const transactionsFile = path.join(dataDir, 'transactions.json');
+const virtualAccountsFile = path.join(dataDir, 'virtualAccounts.json');
+const sessionsFile = path.join(dataDir, 'sessions.json');
 
-// Use deposit module's session manager
-const depositSessionManager = depositFunds.sessionManager;
+// Ensure files exist
+async function ensureFile(filePath, defaultData = {}) {
+  try {
+    await fs.access(filePath);
+  } catch {
+    await fs.writeFile(filePath, JSON.stringify(defaultData, null, 2));
+    console.log(`📄 Created: ${path.basename(filePath)}`);
+  }
+}
 
-// Network mapping for VTU API
-const NETWORK_CODES = {
-  'MTN': '1',
-  'GLO': '2',
-  '9MOBILE': '3',
-  'AIRTEL': '4'
-};
+async function initStorage() {
+  try {
+    // Create data directory
+    await fs.mkdir(dataDir, { recursive: true });
+    
+    // Initialize all storage files
+    await ensureFile(usersFile, {});
+    await ensureFile(transactionsFile, {});
+    await ensureFile(virtualAccountsFile, {});
+    await ensureFile(sessionsFile, {});
+    
+    console.log('✅ Persistent storage initialized');
+  } catch (error) {
+    console.error('❌ Storage initialization error:', error);
+  }
+}
 
-// Available networks
-const AVAILABLE_NETWORKS = ['MTN', 'Glo', 'AIRTEL', '9MOBILE'];
+// Initialize storage immediately
+initStorage();
+
+// ==================== PERSISTENT DATA LOADERS ====================
+async function loadData(filePath, defaultData = {}) {
+  try {
+    const data = await fs.readFile(filePath, 'utf8');
+    return JSON.parse(data);
+  } catch (error) {
+    console.error(`❌ Error loading ${path.basename(filePath)}:`, error.message);
+    return defaultData;
+  }
+}
+
+async function saveData(filePath, data) {
+  try {
+    await fs.writeFile(filePath, JSON.stringify(data, null, 2));
+  } catch (error) {
+    console.error(`❌ Error saving ${path.basename(filePath)}:`, error.message);
+  }
+}
+
+// Load initial data
+let users = await loadData(usersFile, {});
+let transactions = await loadData(transactionsFile, {});
+let virtualAccountsData = await loadData(virtualAccountsFile, {});
+let sessions = await loadData(sessionsFile, {});
+
+// Auto-save data every 30 seconds
+setInterval(async () => {
+  await saveData(usersFile, users);
+  await saveData(transactionsFile, transactions);
+  await saveData(virtualAccountsFile, virtualAccountsData);
+  await saveData(sessionsFile, sessions);
+  console.log('💾 Auto-saved all data');
+}, 30000);
 
 // ==================== HELPER FUNCTIONS ====================
-function initUser(userId) {
+async function initUser(userId) {
   if (!users[userId]) {
     const isAdminUser = userId.toString() === CONFIG.ADMIN_ID.toString();
     
@@ -92,12 +146,20 @@ function initUser(userId) {
       kycRejectedDate: null,
       kycRejectionReason: null
     };
-    transactions[userId] = [];
+    
+    // Initialize transactions for user
+    if (!transactions[userId]) {
+      transactions[userId] = [];
+    }
+    
+    // Save immediately
+    await saveData(usersFile, users);
+    await saveData(transactionsFile, transactions);
   }
   return users[userId];
 }
 
-// Add virtual account database methods
+// Add virtual account database methods with persistence
 virtualAccounts.findByUserId = async (telegramId) => {
   const user = users[telegramId];
   if (user && user.virtualAccount) {
@@ -112,7 +174,7 @@ virtualAccounts.findByUserId = async (telegramId) => {
 virtualAccounts.create = async (accountData) => {
   const userId = accountData.user_id;
   if (!users[userId]) {
-    initUser(userId);
+    await initUser(userId);
   }
   
   users[userId].virtualAccount = {
@@ -128,27 +190,35 @@ virtualAccounts.create = async (accountData) => {
   users[userId].virtualAccountNumber = accountData.account_number;
   users[userId].virtualAccountBank = accountData.bank_name;
   
+  // Also save to virtualAccountsData for quick lookup
+  virtualAccountsData[userId] = users[userId].virtualAccount;
+  
+  // Save immediately
+  await saveData(usersFile, users);
+  await saveData(virtualAccountsFile, virtualAccountsData);
+  
   return users[userId].virtualAccount;
 };
 
 virtualAccounts.findByAccountNumber = async (accountNumber) => {
-  for (const userId in users) {
-    const user = users[userId];
-    if (user.virtualAccount && user.virtualAccount.account_number === accountNumber) {
+  // First check virtualAccountsData
+  for (const userId in virtualAccountsData) {
+    const account = virtualAccountsData[userId];
+    if (account.account_number === accountNumber) {
       return {
         user_id: userId,
-        ...user.virtualAccount
+        ...account
       };
     }
   }
   return null;
 };
 
-// Add transaction methods
+// Add transaction methods with persistence
 transactions.create = async (txData) => {
   const userId = txData.user_id || txData.telegramId;
   if (!users[userId]) {
-    initUser(userId);
+    await initUser(userId);
   }
   
   if (!transactions[userId]) {
@@ -162,6 +232,10 @@ transactions.create = async (txData) => {
   };
   
   transactions[userId].push(transaction);
+  
+  // Save immediately
+  await saveData(transactionsFile, transactions);
+  
   return transaction;
 };
 
@@ -174,7 +248,7 @@ transactions.findByReference = async (reference) => {
   return null;
 };
 
-// Add user methods
+// Add user methods with persistence
 users.creditWallet = async (telegramId, amount) => {
   const user = users[telegramId];
   if (!user) {
@@ -182,6 +256,10 @@ users.creditWallet = async (telegramId, amount) => {
   }
   
   user.wallet = (user.wallet || 0) + parseFloat(amount);
+  
+  // Save immediately
+  await saveData(usersFile, users);
+  
   return user.wallet;
 };
 
@@ -192,12 +270,54 @@ users.findById = async (telegramId) => {
 users.update = async (telegramId, updateData) => {
   const user = users[telegramId];
   if (!user) {
-    initUser(telegramId);
+    await initUser(telegramId);
   }
   
   Object.assign(users[telegramId], updateData);
+  
+  // Save immediately
+  await saveData(usersFile, users);
+  
   return users[telegramId];
 };
+
+// Session methods with persistence
+const sessionManager = {
+  getSession: (userId) => {
+    return sessions[userId] || null;
+  },
+  
+  setSession: async (userId, sessionData) => {
+    sessions[userId] = sessionData;
+    await saveData(sessionsFile, sessions);
+  },
+  
+  clearSession: async (userId) => {
+    delete sessions[userId];
+    await saveData(sessionsFile, sessions);
+  },
+  
+  updateSession: async (userId, updates) => {
+    if (sessions[userId]) {
+      Object.assign(sessions[userId], updates);
+      await saveData(sessionsFile, sessions);
+    }
+  }
+};
+
+// Use deposit module's session manager
+const depositSessionManager = depositFunds.sessionManager;
+
+// Network mapping for VTU API
+const NETWORK_CODES = {
+  'MTN': '1',
+  'GLO': '2',
+  '9MOBILE': '3',
+  'AIRTEL': '4'
+};
+
+// Available networks
+const AVAILABLE_NETWORKS = ['MTN', 'Glo', 'AIRTEL', '9MOBILE'];
 
 function isAdmin(userId) {
   return userId.toString() === CONFIG.ADMIN_ID.toString();
@@ -271,7 +391,7 @@ app.listen(WEBHOOK_PORT, () => {
 bot.start(async (ctx) => {
   try {
     const userId = ctx.from.id.toString();
-    const user = initUser(userId);
+    const user = await initUser(userId);
     const isUserAdmin = isAdmin(userId);
     
     // Set user full name and email if not set
@@ -279,6 +399,9 @@ bot.start(async (ctx) => {
       user.firstName = ctx.from.first_name || '';
       user.lastName = ctx.from.last_name || '';
       user.username = ctx.from.username || null;
+      
+      // Save updated user info
+      await saveData(usersFile, users);
     }
     
     let keyboard;
@@ -361,8 +484,7 @@ bot.start(async (ctx) => {
 bot.hears('📞 Buy Airtime', (ctx) => {
   try {
     const userId = ctx.from.id.toString();
-    const user = initUser(userId);
-    return buyAirtime.handleAirtime(ctx, users, sessions, CONFIG, NETWORK_CODES);
+    return buyAirtime.handleAirtime(ctx, users, sessionManager, CONFIG, NETWORK_CODES);
   } catch (error) {
     console.error('❌ Airtime handler error:', error);
     ctx.reply('❌ Error loading airtime purchase. Please try again.');
@@ -373,8 +495,7 @@ bot.hears('📞 Buy Airtime', (ctx) => {
 bot.hears('📡 Buy Data', (ctx) => {
   try {
     const userId = ctx.from.id.toString();
-    const user = initUser(userId);
-    return buyData.handleData(ctx, users, sessions, CONFIG, NETWORK_CODES);
+    return buyData.handleData(ctx, users, sessionManager, CONFIG, NETWORK_CODES);
   } catch (error) {
     console.error('❌ Data handler error:', error);
     ctx.reply('❌ Error loading data purchase. Please try again.');
@@ -387,7 +508,6 @@ bot.hears('💰 Wallet Balance', (ctx) => walletBalance.handleWallet(ctx, users,
 // Deposit Funds - USING NEW MODULE
 bot.hears('💳 Deposit Funds', (ctx) => {
   const userId = ctx.from.id.toString();
-  const user = initUser(userId);
   return depositFunds.handleDeposit(ctx, users, virtualAccounts);
 });
 
@@ -395,7 +515,7 @@ bot.hears('💳 Deposit Funds', (ctx) => {
 bot.hears('🏦 Money Transfer', async (ctx) => {
   try {
     const userId = ctx.from.id.toString();
-    const user = initUser(userId);
+    const user = await initUser(userId);
     
     if (user.kycStatus !== 'approved') {
       return await ctx.reply(
@@ -539,7 +659,7 @@ bot.hears('🆘 Help & Support', async (ctx) => {
 bot.command('setpin', async (ctx) => {
   try {
     const userId = ctx.from.id.toString();
-    const user = initUser(userId);
+    const user = await initUser(userId);
     const args = ctx.message.text.split(' ');
     
     if (args.length !== 2) {
@@ -556,6 +676,9 @@ bot.command('setpin', async (ctx) => {
     user.pinAttempts = 0;
     user.pinLocked = false;
     
+    // Save immediately
+    await saveData(usersFile, users);
+    
     await ctx.reply('✅ PIN set successfully\\! Use this PIN to confirm transactions\\.', { parse_mode: 'MarkdownV2' });
     
   } catch (error) {
@@ -566,7 +689,7 @@ bot.command('setpin', async (ctx) => {
 bot.command('balance', async (ctx) => {
   try {
     const userId = ctx.from.id.toString();
-    const user = initUser(userId);
+    const user = await initUser(userId);
     
     // Check email and virtual account status for Billstack
     let emailStatus = '';
@@ -622,8 +745,8 @@ try {
 console.log('\n📋 REGISTERING CALLBACK HANDLERS...');
 
 // Get callbacks from modules
-const airtimeCallbacks = buyAirtime.getCallbacks ? buyAirtime.getCallbacks(bot, users, sessions, CONFIG, NETWORK_CODES) : {};
-const dataCallbacks = buyData.getCallbacks ? buyData.getCallbacks(bot, users, sessions, CONFIG) : {};
+const airtimeCallbacks = buyAirtime.getCallbacks ? buyAirtime.getCallbacks(bot, users, sessionManager, CONFIG, NETWORK_CODES) : {};
+const dataCallbacks = buyData.getCallbacks ? buyData.getCallbacks(bot, users, sessionManager, CONFIG) : {};
 const adminCallbacks = admin.getCallbacks ? admin.getCallbacks(bot, users, transactions, CONFIG) : {};
 const kycCallbacks = kyc.getCallbacks ? kyc.getCallbacks(bot, users) : {};
 
@@ -724,7 +847,7 @@ bot.action(/^bank_(.+)$/, async (ctx) => {
 bot.action('bank_transfer_start', async (ctx) => {
   try {
     const userId = ctx.from.id.toString();
-    const user = initUser(userId);
+    const user = await initUser(userId);
     
     depositSessionManager.startSession(userId, 'bank_transfer');
     
@@ -777,7 +900,7 @@ bot.action('bank_transfer_start', async (ctx) => {
 bot.action('start', async (ctx) => {
   try {
     const userId = ctx.from.id.toString();
-    const user = initUser(userId);
+    const user = await initUser(userId);
     const isUserAdmin = isAdmin(userId);
     
     let keyboard;
@@ -866,7 +989,7 @@ bot.on('text', async (ctx) => {
     const text = ctx.message.text.trim();
     
     // Initialize user if not exists
-    const user = initUser(userId);
+    const user = await initUser(userId);
     
     // First, check if this is a deposit-related text
     const depositHandled = await depositFunds.handleDepositText(ctx, text, users, virtualAccounts, bot);
@@ -875,19 +998,20 @@ bot.on('text', async (ctx) => {
     }
     
     // Handle airtime text
-    if (sessions[userId] && sessions[userId].action === 'airtime') {
+    const userSession = sessionManager.getSession(userId);
+    if (userSession && userSession.action === 'airtime') {
       const airtimeTextHandler = require('./app/buyAirtime').handleText;
       if (airtimeTextHandler) {
-        await airtimeTextHandler(ctx, text, sessions[userId], user, users, transactions, sessions, NETWORK_CODES, CONFIG);
+        await airtimeTextHandler(ctx, text, userSession, user, users, transactions, sessionManager, NETWORK_CODES, CONFIG);
         return;
       }
     }
     
     // Handle data text
-    if (sessions[userId] && sessions[userId].action === 'data') {
+    if (userSession && userSession.action === 'data') {
       const dataTextHandler = require('./app/buyData').handleText;
       if (dataTextHandler) {
-        await dataTextHandler(ctx, text, sessions[userId], user, users, transactions, sessions, NETWORK_CODES, CONFIG);
+        await dataTextHandler(ctx, text, userSession, user, users, transactions, sessionManager, NETWORK_CODES, CONFIG);
         return;
       }
     }
@@ -1022,6 +1146,10 @@ bot.on('text', async (ctx) => {
           if (user.pinAttempts >= 3) {
             user.pinLocked = true;
             depositSessionManager.clearSession(userId);
+            
+            // Save user changes
+            await saveData(usersFile, users);
+            
             return await ctx.reply(
               '❌ *ACCOUNT LOCKED*\n\n' +
               '🔒 Too many wrong PIN attempts\\.\n\n' +
@@ -1029,6 +1157,9 @@ bot.on('text', async (ctx) => {
               { parse_mode: 'MarkdownV2' }
             );
           }
+          
+          // Save user changes
+          await saveData(usersFile, users);
           
           return await ctx.reply(
             `❌ *WRONG PIN*\n\n` +
@@ -1056,7 +1187,7 @@ bot.on('text', async (ctx) => {
           
           const reference = `BTR${Date.now()}_${userId}`;
           
-          transactions[userId].push({
+          await transactions.create({
             type: 'bank_transfer',
             amount: amount,
             fee: fee,
@@ -1161,6 +1292,7 @@ bot.launch().then(() => {
   console.log(`🔐 Billstack Secret Key: ${CONFIG.BILLSTACK_SECRET_KEY ? '✅ SET' : '❌ NOT SET'}`);
   console.log(`💳 Bank Transfer: ${CONFIG.BANK_TRANSFER_ENABLED ? '✅ ENABLED' : '❌ DISABLED'}`);
   console.log(`🌐 Webhook Server: http://localhost:${WEBHOOK_PORT}/billstack-webhook`);
+  console.log(`💾 Persistent Storage: Enabled (auto-save every 30s)`);
   
   if (CONFIG.BILLSTACK_API_KEY && CONFIG.BILLSTACK_SECRET_KEY) {
     console.log('\n✅ BILLSTACK VIRTUAL ACCOUNT FEATURES:');
@@ -1187,18 +1319,35 @@ bot.launch().then(() => {
   console.log('• 🛂 KYC Status (Working)');
   console.log('• 🛠️ Admin Panel (Working)');
   console.log('• 🆘 Help & Support (Working)');
+  console.log('• 💾 Persistent Storage (Enabled)');
   console.log('\n⚡ BOT IS READY!');
 }).catch(err => {
   console.error('❌ Bot launch failed:', err);
 });
 
-// Graceful shutdown
-process.once('SIGINT', () => {
+// Graceful shutdown with data save
+process.once('SIGINT', async () => {
   console.log('\n🛑 Shutting down...');
+  
+  // Save all data before shutdown
+  console.log('💾 Saving all data before shutdown...');
+  await saveData(usersFile, users);
+  await saveData(transactionsFile, transactions);
+  await saveData(virtualAccountsFile, virtualAccountsData);
+  await saveData(sessionsFile, sessions);
+  
   bot.stop('SIGINT');
 });
 
-process.once('SIGTERM', () => {
+process.once('SIGTERM', async () => {
   console.log('\n🛑 Shutting down...');
+  
+  // Save all data before shutdown
+  console.log('💾 Saving all data before shutdown...');
+  await saveData(usersFile, users);
+  await saveData(transactionsFile, transactions);
+  await saveData(virtualAccountsFile, virtualAccountsData);
+  await saveData(sessionsFile, sessions);
+  
   bot.stop('SIGTERM');
 });

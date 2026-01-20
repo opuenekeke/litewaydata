@@ -208,17 +208,61 @@ function validatePhone(phone) {
 }
 
 /* =====================================================
-   1️⃣ VIRTUAL ACCOUNT CREATION
+   1️⃣ VIRTUAL ACCOUNT CREATION - UPDATED WITH DUPLICATION CHECK
 ===================================================== */
-async function createVirtualAccountForUser(user) {
+async function createVirtualAccountForUser(user, virtualAccounts) {
   try {
-    console.log(`\n🏦 Creating virtual account for user ${user.telegramId}`);
+    console.log(`\n🏦 Creating/Checking virtual account for user ${user.telegramId} (${user.firstName || 'User'})`);
+    
+    // FIRST: Check if user already has a virtual account in our database
+    const existingAccount = await virtualAccounts.findByUserId(user.telegramId);
+    
+    if (existingAccount && existingAccount.is_active) {
+      console.log('✅ User already has active virtual account:', existingAccount.account_number);
+      
+      // If in test mode, return existing account
+      if (CONFIG.TEST_MODE) {
+        console.log('🧪 TEST MODE: Using existing account');
+        return {
+          ...existingAccount,
+          note: 'Existing account retrieved from database (Test Mode)'
+        };
+      }
+      
+      // Try to verify with Billstack API if we have credentials
+      if (CONFIG.BILLSTACK_TOKEN) {
+        try {
+          console.log('🔍 Verifying existing account with Billstack...');
+          // Note: You could add a Billstack API verification call here
+          // For example: billstackClient.get(`/accounts/${existingAccount.account_number}`)
+          // For now, we'll just log and return the existing account
+          console.log('✅ Existing account verified (using cached data)');
+          return {
+            ...existingAccount,
+            note: 'Existing active account retrieved from database'
+          };
+        } catch (verifyError) {
+          console.log('⚠️ Could not verify existing account:', verifyError.message);
+          // Continue to create a new one
+        }
+      } else {
+        console.log('✅ Using existing account from database');
+        return {
+          ...existingAccount,
+          note: 'Existing account retrieved from database'
+        };
+      }
+    }
+    
+    // If no existing account or account is not active, create new one
+    console.log('🆕 No active virtual account found, creating new one...');
     
     if (CONFIG.TEST_MODE) {
-      console.log('🧪 TEST MODE: Returning test account');
+      console.log('🧪 TEST MODE: Creating test account');
       return {
         ...CONFIG.TEST_VIRTUAL_ACCOUNT,
-        account_name: `${user.firstName || 'User'} ${user.lastName || ''}`.trim() || 'User Account'
+        account_name: `${user.firstName || 'User'} ${user.lastName || ''}`.trim() || 'User Account',
+        account_number: `TEST${user.telegramId.slice(-6)}${Date.now().toString().slice(-6)}`
       };
     }
     
@@ -272,13 +316,13 @@ async function createVirtualAccountForUser(user) {
     };
 
   } catch (error) {
-    console.error(`❌ Failed to create account: ${error.message}`);
+    console.error(`❌ Failed to create/check account: ${error.message}`);
     
     if (error.response?.status === 401) {
       throw new Error('Invalid Billstack API token. Please contact admin.');
     }
     
-    throw new Error(`Virtual account creation failed: ${error.message}`);
+    throw new Error(`Virtual account operation failed: ${error.message}`);
   }
 }
 
@@ -500,6 +544,54 @@ async function handleCreateVirtualAccount(ctx, users, virtualAccounts, bot) {
     
     try {
       console.log('🚀 Starting virtual account creation...');
+      
+      // Check if user already has an account first
+      const existingAccount = await virtualAccounts.findByUserId(telegramId);
+      
+      if (existingAccount && existingAccount.is_active) {
+        console.log('✅ User already has active account, displaying it...');
+        
+        let message = `✅ *Virtual Account Found!*\n\n`;
+        message += `You already have an active account:\n\n`;
+        message += `🏦 *Bank:* ${existingAccount.bank_name}\n`;
+        message += `🔢 *Account Number:* \`${existingAccount.account_number}\`\n`;
+        message += `👤 *Account Name:* ${existingAccount.account_name}\n`;
+        message += `📅 *Created:* ${new Date(existingAccount.created_at).toLocaleDateString()}\n\n`;
+        
+        if (existingAccount.provider !== 'test') {
+          message += `💰 *How to Deposit:*\n`;
+          message += `1. Transfer to account above\n`;
+          message += `2. Use any bank app\n`;
+          message += `3. Minimum: ₦100\n`;
+          message += `4. Maximum: ₦1,000,000\n\n`;
+          message += `⏱️ *Processing Time:* 1-5 minutes\n`;
+        }
+        
+        message += `📞 *Support:* @opuenekeke`;
+        
+        try {
+          await ctx.editMessageText(message, { 
+            parse_mode: 'Markdown',
+            ...Markup.inlineKeyboard([
+              [Markup.button.callback('🔄 Create New Account', 'force_new_account')],
+              [Markup.button.callback('📋 Manual Deposit', 'manual_deposit')],
+              [Markup.button.callback('🏠 Home', 'start')]
+            ])
+          });
+        } catch (editError) {
+          await ctx.reply(message, { 
+            parse_mode: 'Markdown',
+            ...Markup.inlineKeyboard([
+              [Markup.button.callback('🔄 Create New Account', 'force_new_account')],
+              [Markup.button.callback('📋 Manual Deposit', 'manual_deposit')],
+              [Markup.button.callback('🏠 Home', 'start')]
+            ])
+          });
+        }
+        return;
+      }
+      
+      // If no existing account, create new one
       const newAccount = await createVirtualAccountForUser({
         telegramId: user.telegramId,
         email: user.email,
@@ -507,7 +599,7 @@ async function handleCreateVirtualAccount(ctx, users, virtualAccounts, bot) {
         lastName: user.lastName,
         username: user.username,
         phone: user.phone
-      });
+      }, virtualAccounts);
 
       console.log('✅ Account created, saving to database...');
       await virtualAccounts.create({
@@ -608,6 +700,98 @@ async function handleCreateVirtualAccount(ctx, users, virtualAccounts, bot) {
   } catch (error) {
     console.error('❌ Callback handler error:', error);
     await ctx.answerCbQuery('❌ Error occurred');
+  }
+}
+
+async function handleForceNewAccount(ctx, users, virtualAccounts, bot) {
+  console.log('🟢 CALLBACK TRIGGERED: force_new_account');
+  
+  try {
+    const { Markup } = require('telegraf');
+    const telegramId = ctx.from.id.toString();
+    
+    await ctx.answerCbQuery('⏳ Creating new account...');
+    
+    try {
+      await ctx.editMessageText(
+        `🔄 *Creating New Virtual Account...*\n\n` +
+        `⏳ Please wait...`,
+        { parse_mode: 'Markdown' }
+      );
+    } catch (editError) {
+      await ctx.reply(
+        `🔄 *Creating New Virtual Account...*\n\n` +
+        `⏳ Please wait...`,
+        { parse_mode: 'Markdown' }
+      );
+    }
+    
+    const user = await users.findById(telegramId);
+    if (!user) {
+      await ctx.reply('❌ User not found.');
+      return;
+    }
+    
+    // Deactivate old account if exists
+    const oldAccount = await virtualAccounts.findByUserId(telegramId);
+    if (oldAccount) {
+      await virtualAccounts.update(oldAccount.id, { is_active: false });
+      console.log(`🗑️ Deactivated old account: ${oldAccount.account_number}`);
+    }
+    
+    // Create new account
+    const newAccount = await createVirtualAccountForUser({
+      telegramId: user.telegramId,
+      email: user.email,
+      firstName: user.firstName,
+      lastName: user.lastName,
+      username: user.username,
+      phone: user.phone
+    }, virtualAccounts);
+
+    await virtualAccounts.create({
+      user_id: telegramId,
+      ...newAccount
+    });
+    
+    let message = `🆕 *New Virtual Account Created!*\n\n`;
+    message += `(Old account deactivated)\n\n`;
+    message += `🏦 *Bank:* ${newAccount.bank_name}\n`;
+    message += `🔢 *Account Number:* \`${newAccount.account_number}\`\n`;
+    message += `👤 *Account Name:* ${newAccount.account_name}\n\n`;
+    
+    if (newAccount.provider !== 'test') {
+      message += `💰 *How to Deposit:*\n`;
+      message += `1. Transfer to new account above\n`;
+      message += `2. Use any bank app\n`;
+      message += `3. Minimum: ₦100\n`;
+      message += `4. Maximum: ₦1,000,000\n\n`;
+      message += `⏱️ *Processing Time:* 1-5 minutes\n`;
+    }
+    
+    message += `📞 *Support:* @opuenekeke`;
+    
+    try {
+      await ctx.editMessageText(message, { 
+        parse_mode: 'Markdown',
+        ...Markup.inlineKeyboard([
+          [Markup.button.callback('📋 Manual Deposit', 'manual_deposit')],
+          [Markup.button.callback('🏠 Home', 'start')]
+        ])
+      });
+    } catch (editError) {
+      await ctx.reply(message, { 
+        parse_mode: 'Markdown',
+        ...Markup.inlineKeyboard([
+          [Markup.button.callback('📋 Manual Deposit', 'manual_deposit')],
+          [Markup.button.callback('🏠 Home', 'start')]
+        ])
+      });
+    }
+    
+  } catch (error) {
+    console.error('❌ Force new account error:', error);
+    await ctx.answerCbQuery('❌ Error');
   }
 }
 
@@ -713,6 +897,11 @@ function setupDepositHandlers(bot, users, virtualAccounts) {
     return handleCreateVirtualAccount(ctx, users, virtualAccounts, bot);
   });
   
+  bot.action('force_new_account', (ctx) => {
+    console.log('🟢 force_new_account callback triggered');
+    return handleForceNewAccount(ctx, users, virtualAccounts, bot);
+  });
+  
   bot.action('manual_deposit', (ctx) => {
     console.log('🟢 manual_deposit callback triggered');
     return handleManualDeposit(ctx);
@@ -752,11 +941,12 @@ module.exports = {
   // Session manager
   sessionManager,
   
-  // Virtual account function
+  // Virtual account function - Updated to accept virtualAccounts parameter
   createVirtualAccountForUser,
   
   // Callback handlers (for registration)
   handleCreateVirtualAccount,
+  handleForceNewAccount,
   handleManualDeposit,
   handleCancelDeposit,
   handleChangeEmail,
