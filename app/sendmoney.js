@@ -13,11 +13,13 @@ const CONFIG = {
   MAX_TRANSFER_AMOUNT: 1000000
 };
 
-// Session management for money transfers
+// Session management integrated with main session system
 const sessionManager = {
   sessions: {},
   
   startSession: (userId, action) => {
+    // Get the main sessions object from global context or pass it
+    // For now, we'll store locally but need to sync with main
     sessionManager.sessions[userId] = {
       action: action,
       step: 1,
@@ -268,8 +270,9 @@ async function handleSendMoney(ctx, users, transactions) {
       );
     }
     
-    // Start session
+    // Start session using the main session system
     sessionManager.startSession(userId, 'send_money');
+    console.log(`💼 Send Money session started for ${userId}: send_money`);
     
     // Get banks and show selection
     const banks = await getBanks();
@@ -282,13 +285,13 @@ async function handleSendMoney(ctx, users, transactions) {
       const row = [];
       for (let j = 0; j < banksPerRow && i + j < banks.length; j++) {
         const bank = banks[i + j];
-        row.push(Markup.button.callback(`🏦 ${bank.name}`, `bank_${bank.code}`));
+        row.push(Markup.button.callback(`🏦 ${bank.name}`, `sendmoney_bank_${bank.code}`));
       }
       bankButtons.push(row);
     }
     
     bankButtons.push([
-      Markup.button.callback('🔄 Refresh Banks', 'refresh_banks'),
+      Markup.button.callback('🔄 Refresh Banks', 'sendmoney_refresh_banks'),
       Markup.button.callback('⬅️ Cancel', 'start')
     ]);
     
@@ -318,7 +321,7 @@ async function handleSendMoney(ctx, users, transactions) {
 function getCallbacks(bot, users, transactions, CONFIG) {
   return {
     // Refresh banks list
-    'refresh_banks': async (ctx) => {
+    'sendmoney_refresh_banks': async (ctx) => {
       try {
         const userId = ctx.from.id.toString();
         
@@ -330,13 +333,13 @@ function getCallbacks(bot, users, transactions, CONFIG) {
           const row = [];
           for (let j = 0; j < banksPerRow && i + j < banks.length; j++) {
             const bank = banks[i + j];
-            row.push(Markup.button.callback(`🏦 ${bank.name}`, `bank_${bank.code}`));
+            row.push(Markup.button.callback(`🏦 ${bank.name}`, `sendmoney_bank_${bank.code}`));
           }
           bankButtons.push(row);
         }
         
         bankButtons.push([
-          Markup.button.callback('🔄 Refresh Banks', 'refresh_banks'),
+          Markup.button.callback('🔄 Refresh Banks', 'sendmoney_refresh_banks'),
           Markup.button.callback('⬅️ Cancel', 'start')
         ]);
         
@@ -359,14 +362,18 @@ function getCallbacks(bot, users, transactions, CONFIG) {
       }
     },
     
-    // Bank selection
-    '^bank_(.+)$': async (ctx) => {
+    // Bank selection - FIXED: Add 'sendmoney_' prefix to avoid conflicts
+    '^sendmoney_bank_(.+)$': async (ctx) => {
       try {
         const userId = ctx.from.id.toString();
         const bankCode = ctx.match[1];
         const session = sessionManager.getSession(userId);
         
+        console.log(`💼 Bank selected: ${bankCode} for user ${userId}`);
+        console.log(`💼 Current session:`, session);
+        
         if (!session || session.action !== 'send_money' || session.step !== 1) {
+          console.log(`💼 Session issue: ${!session ? 'No session' : 'Wrong step/action'}`);
           return ctx.answerCbQuery('Session expired. Start over.');
         }
         
@@ -374,6 +381,8 @@ function getCallbacks(bot, users, transactions, CONFIG) {
         const banks = await getBanks();
         const selectedBank = banks.find(b => b.code === bankCode);
         const bankName = selectedBank ? selectedBank.name : 'Unknown Bank';
+        
+        console.log(`💼 Bank selected: ${bankName} (${bankCode})`);
         
         sessionManager.updateStep(userId, 2, { 
           bankCode: bankCode, 
@@ -388,7 +397,7 @@ function getCallbacks(bot, users, transactions, CONFIG) {
           {
             parse_mode: 'MarkdownV2',
             ...Markup.inlineKeyboard([
-              [Markup.button.callback('⬅️ Back to Banks', 'refresh_banks')]
+              [Markup.button.callback('⬅️ Back to Banks', 'sendmoney_refresh_banks')]
             ])
           }
         );
@@ -403,14 +412,24 @@ function getCallbacks(bot, users, transactions, CONFIG) {
 }
 
 // Handle text messages for send money
-async function handleText(ctx, text, users, transactions, sessionManager) {
+async function handleText(ctx, text, users, transactions, mainSessionManager) {
   const userId = ctx.from.id.toString();
-  const session = sessionManager.getSession(userId);
+  const session = sessionManager.getSession(userId); // Use sendmoney's session manager
   
-  if (!session || session.action !== 'send_money') return false;
+  console.log(`💼 Text handler - User: ${userId}, Text: ${text}, Has session: ${!!session}`);
+  
+  if (!session || session.action !== 'send_money') {
+    console.log(`💼 No valid send money session found`);
+    return false;
+  }
   
   const user = users[userId];
-  if (!user) return false;
+  if (!user) {
+    console.log(`💼 User not found: ${userId}`);
+    return false;
+  }
+  
+  console.log(`💼 Current step: ${session.step}`);
   
   try {
     if (session.step === 2) {
@@ -427,6 +446,7 @@ async function handleText(ctx, text, users, transactions, sessionManager) {
         return true;
       }
       
+      console.log(`💼 Account number entered: ${accountNumber}`);
       sessionManager.updateStep(userId, 3, { accountNumber: accountNumber });
       
       const loadingMsg = await ctx.reply(
@@ -442,6 +462,7 @@ async function handleText(ctx, text, users, transactions, sessionManager) {
         const resolution = await resolveBankAccount(accountNumber, session.data.bankCode);
         
         if (!resolution.success) {
+          console.log(`💼 Account resolution failed: ${resolution.error}`);
           await ctx.reply(
             `❌ *ACCOUNT RESOLUTION FAILED*\n\n` +
             `🔢 *Account Number\\:* ${accountNumber}\n` +
@@ -454,6 +475,7 @@ async function handleText(ctx, text, users, transactions, sessionManager) {
           
           sessionManager.updateStep(userId, 4); // Manual entry step
         } else {
+          console.log(`💼 Account resolved: ${resolution.accountName}`);
           sessionManager.updateStep(userId, 5, {
             accountName: resolution.accountName,
             accountNumber: resolution.accountNumber,
@@ -489,7 +511,9 @@ async function handleText(ctx, text, users, transactions, sessionManager) {
       
       try {
         await ctx.telegram.deleteMessage(ctx.chat.id, loadingMsg.message_id);
-      } catch (e) {}
+      } catch (e) {
+        console.log('❌ Could not delete loading message:', e.message);
+      }
       
       return true;
     }
@@ -497,6 +521,7 @@ async function handleText(ctx, text, users, transactions, sessionManager) {
     if (session.step === 4) {
       // Manual account name entry
       const accountName = text.substring(0, 100);
+      console.log(`💼 Manual account name entered: ${accountName}`);
       sessionManager.updateStep(userId, 5, {
         accountName: accountName,
         accountNumber: session.data.accountNumber,
@@ -518,6 +543,7 @@ async function handleText(ctx, text, users, transactions, sessionManager) {
     if (session.step === 5) {
       // Amount entry
       const amount = parseFloat(text);
+      console.log(`💼 Amount entered: ${amount}`);
       
       if (isNaN(amount) || amount < CONFIG.MIN_TRANSFER_AMOUNT || amount > CONFIG.MAX_TRANSFER_AMOUNT) {
         await ctx.reply(
@@ -566,6 +592,8 @@ async function handleText(ctx, text, users, transactions, sessionManager) {
     
     if (session.step === 6) {
       // PIN confirmation
+      console.log(`💼 PIN entered: ${text}, User PIN: ${user.pin}`);
+      
       if (text !== user.pin) {
         user.pinAttempts++;
         
@@ -596,6 +624,8 @@ async function handleText(ctx, text, users, transactions, sessionManager) {
       
       const { amount, fee, totalAmount } = session.data;
       const { accountNumber, accountName, bankName, bankCode } = session.data;
+      
+      console.log(`💼 Processing transfer: ${amount} to ${accountName}`);
       
       const processingMsg = await ctx.reply(
         `🔄 *PROCESSING BANK TRANSFER VIA MONNIFY\\.\\.\\.*\n\n` +
@@ -705,7 +735,9 @@ async function handleText(ctx, text, users, transactions, sessionManager) {
       
       try {
         await ctx.telegram.deleteMessage(ctx.chat.id, processingMsg.message_id);
-      } catch (e) {}
+      } catch (e) {
+        console.log('❌ Could not delete processing message:', e.message);
+      }
       
       sessionManager.clearSession(userId);
       return true;
