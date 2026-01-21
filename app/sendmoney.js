@@ -8,6 +8,10 @@ const CONFIG = {
   MONNIFY_SECRET_KEY: process.env.MONNIFY_SECRET_KEY,
   MONNIFY_CONTRACT_CODE: process.env.MONNIFY_CONTRACT_CODE,
   MONNIFY_BASE_URL: process.env.MONNIFY_BASE_URL || 'https://api.monnify.com',
+  MONNIFY_SOURCE_ACCOUNT: process.env.MONNIFY_SOURCE_ACCOUNT,
+  MONNIFY_SOURCE_NAME: process.env.MONNIFY_SOURCE_NAME,
+  MONNIFY_SOURCE_BVN: process.env.MONNIFY_SOURCE_BVN || '00000000000',
+  MONNIFY_SOURCE_BANK_CODE: process.env.MONNIFY_SOURCE_BANK_CODE,
   TRANSFER_FEE_PERCENTAGE: 1.5,
   MIN_TRANSFER_AMOUNT: 100,
   MAX_TRANSFER_AMOUNT: 1000000
@@ -55,7 +59,267 @@ const sessionManager = {
   }
 };
 
-// ... (rest of the functions remain the same - getMonnifyToken, resolveBankAccount, getBanks, initiateTransfer, formatCurrency, escapeMarkdown, isMonnifyConfigured)
+// Helper Functions
+async function getMonnifyToken() {
+  try {
+    const authString = Buffer.from(`${CONFIG.MONNIFY_API_KEY}:${CONFIG.MONNIFY_SECRET_KEY}`).toString('base64');
+    
+    const response = await axios.post(
+      `${CONFIG.MONNIFY_BASE_URL}/api/v1/auth/login`,
+      {},
+      {
+        headers: {
+          'Authorization': `Basic ${authString}`
+        }
+      }
+    );
+    
+    console.log('🔑 Monnify token obtained');
+    return response.data.responseBody.accessToken;
+  } catch (error) {
+    console.error('❌ Monnify auth error:', error.response?.data || error.message);
+    throw new Error('Failed to authenticate with Monnify');
+  }
+}
+
+async function resolveBankAccount(accountNumber, bankCode) {
+  try {
+    const token = await getMonnifyToken();
+    
+    const response = await axios.get(
+      `${CONFIG.MONNIFY_BASE_URL}/api/v1/disbursements/account/validate`,
+      {
+        params: {
+          accountNumber: accountNumber,
+          bankCode: bankCode
+        },
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      }
+    );
+    
+    console.log('💼 SendMoney: Monnify account resolution response:', response.data);
+    
+    if (response.data && response.data.responseBody) {
+      return {
+        success: true,
+        accountName: response.data.responseBody.accountName || 'Unknown Account',
+        accountNumber: response.data.responseBody.accountNumber || accountNumber,
+        bankCode: response.data.responseBody.bankCode || bankCode,
+        bankName: response.data.responseBody.bankName || 'Unknown Bank'
+      };
+    } else {
+      return {
+        success: false,
+        error: 'Invalid response from bank'
+      };
+    }
+  } catch (error) {
+    console.error('❌ Account resolution error:', error.response?.data || error.message);
+    return {
+      success: false,
+      error: error.response?.data?.responseMessage || 'Failed to resolve account'
+    };
+  }
+}
+
+async function getBanks() {
+  try {
+    const token = await getMonnifyToken();
+    
+    const response = await axios.get(
+      `${CONFIG.MONNIFY_BASE_URL}/api/v1/banks`,
+      {
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      }
+    );
+    
+    return response.data.responseBody;
+  } catch (error) {
+    console.error('❌ Get banks error:', error.response?.data || error.message);
+    // Fallback bank list
+    return [
+      { code: "044", name: "Access Bank" },
+      { code: "063", name: "Access Bank (Diamond)" },
+      { code: "050", name: "Ecobank Nigeria" },
+      { code: "070", name: "Fidelity Bank" },
+      { code: "011", name: "First Bank of Nigeria" },
+      { code: "214", name: "First City Monument Bank" },
+      { code: "058", name: "Guaranty Trust Bank" },
+      { code: "030", name: "Heritage Bank" },
+      { code: "301", name: "Jaiz Bank" },
+      { code: "082", name: "Keystone Bank" },
+      { code: "076", name: "Polaris Bank" },
+      { code: "101", name: "Providus Bank" },
+      { code: "221", name: "Stanbic IBTC Bank" },
+      { code: "068", name: "Standard Chartered Bank" },
+      { code: "232", name: "Sterling Bank" },
+      { code: "100", name: "Suntrust Bank" },
+      { code: "032", name: "Union Bank of Nigeria" },
+      { code: "033", name: "United Bank for Africa" },
+      { code: "215", name: "Unity Bank" },
+      { code: "035", name: "Wema Bank" },
+      { code: "057", name: "Zenith Bank" }
+    ];
+  }
+}
+
+async function initiateTransfer(transferData) {
+  try {
+    const token = await getMonnifyToken();
+    
+    // Prepare sender info
+    const senderInfo = {
+      sourceAccountNumber: CONFIG.MONNIFY_SOURCE_ACCOUNT,
+      sourceAccountName: CONFIG.MONNIFY_SOURCE_NAME,
+      sourceAccountBvn: CONFIG.MONNIFY_SOURCE_BVN,
+      senderBankCode: CONFIG.MONNIFY_SOURCE_BANK_CODE
+    };
+    
+    // Prepare payload according to Monnify v2 API
+    const payload = {
+      amount: transferData.amount,
+      reference: transferData.reference,
+      narration: transferData.narration || `Transfer to ${transferData.accountName}`,
+      destinationBankCode: transferData.bankCode,
+      destinationAccountNumber: transferData.accountNumber,
+      destinationAccountName: transferData.accountName,
+      currency: "NGN",
+      sourceAccountNumber: CONFIG.MONNIFY_SOURCE_ACCOUNT,
+      async: true, // Use async to avoid waiting for OTP
+      senderInfo: senderInfo
+    };
+    
+    console.log('💼 SendMoney: Monnify transfer payload:', JSON.stringify(payload, null, 2));
+    
+    // Use v2 API endpoint for transfers
+    const response = await axios.post(
+      `${CONFIG.MONNIFY_BASE_URL}/api/v2/disbursements/single`,
+      payload,
+      {
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json'
+        }
+      }
+    );
+    
+    console.log('💼 SendMoney: Monnify transfer response:', JSON.stringify(response.data, null, 2));
+    
+    if (response.data.responseBody && response.data.responseBody.transactionReference) {
+      return {
+        success: true,
+        transactionReference: response.data.responseBody.transactionReference,
+        paymentReference: response.data.responseBody.paymentReference,
+        amount: response.data.responseBody.amount,
+        status: response.data.responseBody.status,
+        requiresOTP: response.data.responseBody.authorizationRequired || false,
+        message: response.data.responseMessage
+      };
+    } else {
+      return {
+        success: false,
+        error: response.data.responseMessage || 'Transfer initiation failed'
+      };
+    }
+    
+  } catch (error) {
+    console.error('❌ Transfer initiation error:', error.response?.data || error.message);
+    return {
+      success: false,
+      error: error.response?.data?.responseMessage || 'Transfer failed',
+      fullError: error.response?.data
+    };
+  }
+}
+
+async function validateTransferOTP(reference, authorizationCode) {
+  try {
+    const token = await getMonnifyToken();
+    
+    const response = await axios.post(
+      `${CONFIG.MONNIFY_BASE_URL}/api/v2/disbursements/single/validate-otp`,
+      {
+        reference: reference,
+        authorizationCode: authorizationCode
+      },
+      {
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json'
+        }
+      }
+    );
+    
+    return {
+      success: true,
+      status: response.data.responseBody?.status,
+      message: response.data.responseMessage
+    };
+    
+  } catch (error) {
+    console.error('❌ OTP validation error:', error.response?.data || error.message);
+    return {
+      success: false,
+      error: error.response?.data?.responseMessage || 'OTP validation failed'
+    };
+  }
+}
+
+async function checkTransferStatus(transactionReference) {
+  try {
+    const token = await getMonnifyToken();
+    
+    const response = await axios.get(
+      `${CONFIG.MONNIFY_BASE_URL}/api/v2/disbursements/single/transactions/${transactionReference}`,
+      {
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      }
+    );
+    
+    return {
+      success: true,
+      status: response.data.responseBody?.status,
+      transaction: response.data.responseBody
+    };
+    
+  } catch (error) {
+    console.error('❌ Transfer status check error:', error.response?.data || error.message);
+    return {
+      success: false,
+      error: error.response?.data?.responseMessage || 'Failed to check status'
+    };
+  }
+}
+
+function formatCurrency(amount) {
+  return `₦${amount.toLocaleString('en-NG')}`;
+}
+
+function escapeMarkdown(text) {
+  if (typeof text !== 'string') return text;
+  const specialChars = ['_', '*', '[', ']', '(', ')', '~', '`', '>', '#', '+', '-', '=', '|', '{', '}', '.', '!'];
+  let escapedText = text;
+  specialChars.forEach(char => {
+    const regex = new RegExp(`\\${char}`, 'g');
+    escapedText = escapedText.replace(regex, `\\${char}`);
+  });
+  return escapedText;
+}
+
+function isMonnifyConfigured() {
+  return CONFIG.MONNIFY_API_KEY && 
+         CONFIG.MONNIFY_SECRET_KEY && 
+         CONFIG.MONNIFY_CONTRACT_CODE &&
+         CONFIG.MONNIFY_SOURCE_ACCOUNT &&
+         CONFIG.MONNIFY_SOURCE_NAME &&
+         CONFIG.MONNIFY_SOURCE_BANK_CODE;
+}
 
 // Main handler
 async function handleSendMoney(ctx, users, transactions) {
@@ -92,6 +356,7 @@ async function handleSendMoney(ctx, users, transactions) {
     
     // Check Monnify configuration
     if (!isMonnifyConfigured()) {
+      console.error('❌ Monnify not configured properly');
       return await ctx.reply(
         '❌ *BANK TRANSFER SERVICE UNAVAILABLE*\n\n' +
         'Bank transfers are currently disabled\\.\n\n' +
@@ -117,7 +382,7 @@ async function handleSendMoney(ctx, users, transactions) {
     // Get banks and show selection
     const banks = await getBanks();
     
-    // Create bank buttons (pagination can be added if needed)
+    // Create bank buttons
     const bankButtons = [];
     const banksPerRow = 2;
     
@@ -207,14 +472,15 @@ function getCallbacks(bot, users, transactions, CONFIG) {
       try {
         const userId = ctx.from.id.toString();
         const bankCode = ctx.match[1];
-        const session = sessionManager.getSession(userId);
         
         console.log(`💼 SendMoney: Bank callback - User: ${userId}, Bank: ${bankCode}`);
-        console.log(`💼 SendMoney: Current session:`, session);
+        
+        // Check if session exists
+        let session = sessionManager.getSession(userId);
         
         if (!session || session.action !== 'send_money') {
-          console.log(`💼 SendMoney: Invalid session - starting new`);
-          sessionManager.startSession(userId, 'send_money');
+          console.log(`💼 SendMoney: Creating new session for user ${userId}`);
+          session = sessionManager.startSession(userId, 'send_money');
         }
         
         // Get bank name
@@ -254,7 +520,7 @@ function getCallbacks(bot, users, transactions, CONFIG) {
 // Handle text messages for send money
 async function handleText(ctx, text, users, transactions) {
   const userId = ctx.from.id.toString();
-  const session = sessionManager.getSession(userId); // Use our own session manager
+  const session = sessionManager.getSession(userId);
   
   console.log(`💼 SendMoney Text Handler - User: ${userId}, Text: "${text}"`);
   console.log(`💼 SendMoney: Current sessions:`, Object.keys(sendMoneySessions));
@@ -317,19 +583,25 @@ async function handleText(ctx, text, users, transactions) {
           
           sessionManager.updateStep(userId, 4); // Manual entry step
         } else {
-          console.log(`💼 SendMoney: Account resolved successfully: ${resolution.accountName}`);
+          console.log(`💼 SendMoney: Account resolved successfully:`, resolution);
+          
+          // Use the bank name from session if Monnify returns undefined
+          const resolvedBankName = resolution.bankName && resolution.bankName !== 'undefined' 
+            ? resolution.bankName 
+            : session.data.bankName;
+          
           sessionManager.updateStep(userId, 5, {
             accountName: resolution.accountName,
             accountNumber: resolution.accountNumber,
-            bankCode: resolution.bankCode,
-            bankName: resolution.bankName
+            bankCode: resolution.bankCode || session.data.bankCode,
+            bankName: resolvedBankName
           });
           
           await ctx.reply(
             `✅ *ACCOUNT RESOLVED*\n\n` +
             `🔢 *Account Number\\:* ${accountNumber}\n` +
             `📛 *Account Name\\:* ${escapeMarkdown(resolution.accountName)}\n` +
-            `🏦 *Bank\\:* ${escapeMarkdown(resolution.bankName)}\n\n` +
+            `🏦 *Bank\\:* ${escapeMarkdown(resolvedBankName)}\n\n` +
             `💰 *Enter amount to transfer\\:*\n\n` +
             `💸 *Fee\\:* ${CONFIG.TRANSFER_FEE_PERCENTAGE}%\n` +
             `💰 *Min\\:* ${formatCurrency(CONFIG.MIN_TRANSFER_AMOUNT)}\n` +
@@ -360,7 +632,6 @@ async function handleText(ctx, text, users, transactions) {
       return true;
     }
     
-    // Continue with other steps (4, 5, 6) as before...
     if (session.step === 4) {
       // Manual account name entry
       const accountName = text.substring(0, 100);
@@ -369,7 +640,7 @@ async function handleText(ctx, text, users, transactions) {
         accountName: accountName,
         accountNumber: session.data.accountNumber,
         bankCode: session.data.bankCode,
-        bankName: session.data.bankName
+        bankName: session.data.bankName || 'Unknown Bank'
       });
       
       await ctx.reply(
@@ -505,43 +776,69 @@ async function handleText(ctx, text, users, transactions) {
         }
         transactions[userId].push(transaction);
         
-        // Initiate Monnify transfer
+        // Initiate Monnify transfer using v2 API
         const transferResult = await initiateTransfer({
           amount: amount,
           reference: reference,
           narration: `Transfer to ${accountName}`,
-          destinationBankCode: bankCode,
-          destinationAccountNumber: accountNumber,
-          destinationAccountName: accountName
+          accountNumber: accountNumber,
+          accountName: accountName,
+          bankCode: bankCode
         });
         
         if (transferResult.success) {
           // Update transaction status
-          transaction.status = 'completed';
+          transaction.status = transferResult.requiresOTP ? 'pending_otp' : 'processing';
           transaction.paymentReference = transferResult.paymentReference;
           transaction.transactionReference = transferResult.transactionReference;
           transaction.completedAt = new Date().toLocaleString();
+          transaction.monnifyResponse = transferResult.message;
           
-          await ctx.reply(
-            `✅ *TRANSFER SUCCESSFUL\\!*\n\n` +
-            `📛 *To\\:* ${escapeMarkdown(accountName)}\n` +
-            `🔢 *Account\\:* ${accountNumber}\n` +
-            `🏦 *Bank\\:* ${escapeMarkdown(bankName)}\n` +
-            `💰 *Amount\\:* ${formatCurrency(amount)}\n` +
-            `💸 *Fee\\:* ${formatCurrency(fee)}\n` +
-            `💵 *Total Deducted\\:* ${formatCurrency(totalAmount)}\n` +
-            `🔢 *Reference\\:* ${reference}\n` +
-            `💳 *New Balance\\:* ${formatCurrency(user.wallet)}\n\n` +
-            `⚡ *Status\\:* ✅ COMPLETED\n\n` +
-            `💡 *Note\\:* Funds should reflect within 24 hours\\.`,
-            {
-              parse_mode: 'MarkdownV2',
-              ...Markup.inlineKeyboard([
-                [Markup.button.callback('📋 Save Receipt', `save_${reference}`)],
-                [Markup.button.callback('🏠 Home', 'start')]
-              ])
-            }
-          );
+          if (transferResult.requiresOTP) {
+            // Store OTP session
+            sessionManager.updateSession(userId, {
+              step: 7, // OTP step
+              transferReference: reference,
+              transactionReference: transferResult.transactionReference
+            });
+            
+            await ctx.reply(
+              `🔐 *OTP REQUIRED*\n\n` +
+              `📋 *Transfer Details\\:*\n` +
+              `📛 To\\: ${escapeMarkdown(accountName)}\n` +
+              `🔢 Account\\: ${accountNumber}\n` +
+              `💰 Amount\\: ${formatCurrency(amount)}\n\n` +
+              `📱 *Check your registered phone number for OTP*\n\n` +
+              `🔢 *Enter the 6\\-digit OTP sent to your phone\\:*`,
+              { parse_mode: 'MarkdownV2' }
+            );
+          } else {
+            transaction.status = 'completed';
+            
+            await ctx.reply(
+              `✅ *TRANSFER INITIATED SUCCESSFULLY\\!*\n\n` +
+              `📛 *To\\:* ${escapeMarkdown(accountName)}\n` +
+              `🔢 *Account\\:* ${accountNumber}\n` +
+              `🏦 *Bank\\:* ${escapeMarkdown(bankName)}\n` +
+              `💰 *Amount\\:* ${formatCurrency(amount)}\n` +
+              `💸 *Fee\\:* ${formatCurrency(fee)}\n` +
+              `💵 *Total Deducted\\:* ${formatCurrency(totalAmount)}\n` +
+              `🔢 *Reference\\:* ${reference}\n` +
+              `📊 *Monnify Ref\\:* ${transferResult.transactionReference}\n` +
+              `💳 *New Balance\\:* ${formatCurrency(user.wallet)}\n\n` +
+              `⚡ *Status\\:* ✅ PROCESSING\n\n` +
+              `💡 *Note\\:* Funds should reflect within 24 hours\\.`,
+              {
+                parse_mode: 'MarkdownV2',
+                ...Markup.inlineKeyboard([
+                  [Markup.button.callback('📋 Save Receipt', `save_${reference}`)],
+                  [Markup.button.callback('🏠 Home', 'start')]
+                ])
+              }
+            );
+            
+            sessionManager.clearSession(userId);
+          }
         } else {
           // Transfer failed, refund wallet
           user.wallet += totalAmount;
@@ -560,18 +857,107 @@ async function handleText(ctx, text, users, transactions) {
             `Please try again or contact support\\.`,
             { parse_mode: 'MarkdownV2' }
           );
+          
+          sessionManager.clearSession(userId);
         }
         
       } catch (error) {
         console.error('❌ SendMoney: Transfer processing error:', error);
+        
+        // Refund on error
+        user.wallet += totalAmount;
+        user.dailyTransfer -= totalAmount;
         
         await ctx.reply(
           `⚠️ *TRANSFER ERROR*\n\n` +
           `💰 *Amount\\:* ${formatCurrency(amount)}\n` +
           `📛 *To\\:* ${escapeMarkdown(accountName)}\n` +
           `🔢 *Account\\:* ${accountNumber}\n\n` +
-          `🔄 *Status\\:* Processing \\- Please wait\n\n` +
-          `💡 *Note\\:* If transfer doesn\'t complete, contact admin\\.`,
+          `❌ *Error\\:* ${escapeMarkdown(error.message)}\n\n` +
+          `💡 *Note\\:* Your wallet has been refunded\\.\n` +
+          `Please contact admin for assistance\\.`,
+          { parse_mode: 'MarkdownV2' }
+        );
+        
+        sessionManager.clearSession(userId);
+      }
+      
+      try {
+        await ctx.telegram.deleteMessage(ctx.chat.id, processingMsg.message_id);
+      } catch (e) {
+        console.log('💼 SendMoney: Could not delete processing message:', e.message);
+      }
+      
+      return true;
+    }
+    
+    if (session.step === 7) {
+      // OTP entry step
+      const otp = text.replace(/\s+/g, '');
+      
+      if (!/^\d{6}$/.test(otp)) {
+        await ctx.reply(
+          '❌ *INVALID OTP*\n\n' +
+          'OTP must be exactly 6 digits\\.\n\n' +
+          '📝 Try again\\:',
+          { parse_mode: 'MarkdownV2' }
+        );
+        return true;
+      }
+      
+      const processingMsg = await ctx.reply(
+        `🔄 *VERIFYING OTP WITH MONNIFY\\.\\.\\.*\n\n` +
+        `⏳ Please wait\\.\\.\\.`,
+        { parse_mode: 'MarkdownV2' }
+      );
+      
+      try {
+        const otpResult = await validateTransferOTP(session.data.transferReference, otp);
+        
+        if (otpResult.success) {
+          // Find and update transaction
+          const userTransactions = transactions[userId] || [];
+          const transaction = userTransactions.find(t => t.reference === session.data.transferReference);
+          
+          if (transaction) {
+            transaction.status = 'completed';
+            transaction.otpVerified = true;
+            transaction.completedAt = new Date().toLocaleString();
+          }
+          
+          await ctx.reply(
+            `✅ *OTP VERIFIED SUCCESSFULLY\\!*\n\n` +
+            `🔢 *Reference\\:* ${session.data.transferReference}\n` +
+            `📊 *Monnify Ref\\:* ${session.data.transactionReference}\n` +
+            `⚡ *Status\\:* ✅ COMPLETED\n\n` +
+            `💡 *Note\\:* Transfer is now being processed\\.\n` +
+            `Funds should reflect within 24 hours\\.`,
+            {
+              parse_mode: 'MarkdownV2',
+              ...Markup.inlineKeyboard([
+                [Markup.button.callback('📋 Save Receipt', `save_${session.data.transferReference}`)],
+                [Markup.button.callback('🏠 Home', 'start')]
+              ])
+            }
+          );
+        } else {
+          await ctx.reply(
+            `❌ *OTP VERIFICATION FAILED*\n\n` +
+            `⚠️ *Error\\:* ${escapeMarkdown(otpResult.error)}\n\n` +
+            `📝 *Please try again with correct OTP\\:*`,
+            { parse_mode: 'MarkdownV2' }
+          );
+          
+          // Stay on OTP step for retry
+          return true;
+        }
+        
+      } catch (error) {
+        console.error('❌ SendMoney: OTP verification error:', error);
+        await ctx.reply(
+          `⚠️ *OTP VERIFICATION ERROR*\n\n` +
+          `❌ *Error\\:* ${escapeMarkdown(error.message)}\n\n` +
+          `📞 Please contact admin for assistance\\.`,
           { parse_mode: 'MarkdownV2' }
         );
       }
@@ -595,166 +981,6 @@ async function handleText(ctx, text, users, transactions) {
   
   console.log(`💼 SendMoney: No matching step found for step ${session.step}`);
   return false;
-}
-
-// Also, make sure all the helper functions are included (getMonnifyToken, resolveBankAccount, etc.)
-// I'll include them here for completeness:
-
-async function getMonnifyToken() {
-  try {
-    const authString = Buffer.from(`${CONFIG.MONNIFY_API_KEY}:${CONFIG.MONNIFY_SECRET_KEY}`).toString('base64');
-    
-    const response = await axios.post(
-      `${CONFIG.MONNIFY_BASE_URL}/api/v1/auth/login`,
-      {},
-      {
-        headers: {
-          'Authorization': `Basic ${authString}`
-        }
-      }
-    );
-    
-    return response.data.responseBody.accessToken;
-  } catch (error) {
-    console.error('❌ Monnify auth error:', error.response?.data || error.message);
-    throw new Error('Failed to authenticate with Monnify');
-  }
-}
-
-async function resolveBankAccount(accountNumber, bankCode) {
-  try {
-    const token = await getMonnifyToken();
-    
-    const response = await axios.get(
-      `${CONFIG.MONNIFY_BASE_URL}/api/v1/disbursements/account/validate`,
-      {
-        params: {
-          accountNumber: accountNumber,
-          bankCode: bankCode
-        },
-        headers: {
-          'Authorization': `Bearer ${token}`
-        }
-      }
-    );
-    
-    return {
-      success: true,
-      accountName: response.data.responseBody.accountName,
-      accountNumber: response.data.responseBody.accountNumber,
-      bankCode: response.data.responseBody.bankCode,
-      bankName: response.data.responseBody.bankName
-    };
-  } catch (error) {
-    console.error('❌ Account resolution error:', error.response?.data || error.message);
-    return {
-      success: false,
-      error: error.response?.data?.responseMessage || 'Failed to resolve account'
-    };
-  }
-}
-
-async function getBanks() {
-  try {
-    const token = await getMonnifyToken();
-    
-    const response = await axios.get(
-      `${CONFIG.MONNIFY_BASE_URL}/api/v1/banks`,
-      {
-        headers: {
-          'Authorization': `Bearer ${token}`
-        }
-      }
-    );
-    
-    return response.data.responseBody;
-  } catch (error) {
-    console.error('❌ Get banks error:', error.response?.data || error.message);
-    return [
-      { code: "044", name: "Access Bank" },
-      { code: "063", name: "Access Bank (Diamond)" },
-      { code: "050", name: "Ecobank Nigeria" },
-      { code: "070", name: "Fidelity Bank" },
-      { code: "011", name: "First Bank of Nigeria" },
-      { code: "214", name: "First City Monument Bank" },
-      { code: "058", name: "Guaranty Trust Bank" },
-      { code: "030", name: "Heritage Bank" },
-      { code: "301", name: "Jaiz Bank" },
-      { code: "082", name: "Keystone Bank" },
-      { code: "076", name: "Polaris Bank" },
-      { code: "101", name: "Providus Bank" },
-      { code: "221", name: "Stanbic IBTC Bank" },
-      { code: "068", name: "Standard Chartered Bank" },
-      { code: "232", name: "Sterling Bank" },
-      { code: "100", name: "Suntrust Bank" },
-      { code: "032", name: "Union Bank of Nigeria" },
-      { code: "033", name: "United Bank for Africa" },
-      { code: "215", name: "Unity Bank" },
-      { code: "035", name: "Wema Bank" },
-      { code: "057", name: "Zenith Bank" }
-    ];
-  }
-}
-
-async function initiateTransfer(transferData) {
-  try {
-    const token = await getMonnifyToken();
-    
-    const payload = {
-      amount: transferData.amount,
-      reference: transferData.reference,
-      narration: transferData.narration || `Transfer to ${transferData.accountName}`,
-      destinationBankCode: transferData.bankCode,
-      destinationAccountNumber: transferData.accountNumber,
-      destinationAccountName: transferData.accountName,
-      currency: "NGN",
-      sourceAccountNumber: "default"
-    };
-    
-    const response = await axios.post(
-      `${CONFIG.MONNIFY_BASE_URL}/api/v2/disbursements/single`,
-      payload,
-      {
-        headers: {
-          'Authorization': `Bearer ${token}`,
-          'Content-Type': 'application/json'
-        }
-      }
-    );
-    
-    return {
-      success: true,
-      transactionReference: response.data.responseBody.transactionReference,
-      paymentReference: response.data.responseBody.paymentReference,
-      amount: response.data.responseBody.amount,
-      status: response.data.responseBody.status
-    };
-  } catch (error) {
-    console.error('❌ Transfer initiation error:', error.response?.data || error.message);
-    return {
-      success: false,
-      error: error.response?.data?.responseMessage || 'Transfer failed'
-    };
-  }
-}
-
-function formatCurrency(amount) {
-  return `₦${amount.toLocaleString('en-NG')}`;
-}
-
-function escapeMarkdown(text) {
-  if (typeof text !== 'string') return text;
-  const specialChars = ['_', '*', '[', ']', '(', ')', '~', '`', '>', '#', '+', '-', '=', '|', '{', '}', '.', '!'];
-  let escapedText = text;
-  specialChars.forEach(char => {
-    const regex = new RegExp(`\\${char}`, 'g');
-    escapedText = escapedText.replace(regex, `\\${char}`);
-  });
-  return escapedText;
-}
-
-function isMonnifyConfigured() {
-  return CONFIG.MONNIFY_API_KEY && CONFIG.MONNIFY_SECRET_KEY && CONFIG.MONNIFY_CONTRACT_CODE;
 }
 
 // Export module
