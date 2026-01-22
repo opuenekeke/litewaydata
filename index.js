@@ -127,6 +127,92 @@ async function initializeData() {
   }
 }
 
+// ==================== USER MANAGEMENT FUNCTIONS ====================
+async function initUser(userId) {
+  if (!users[userId]) {
+    const isAdminUser = userId.toString() === CONFIG.ADMIN_ID.toString();
+    
+    users[userId] = {
+      telegramId: userId,
+      wallet: 0,
+      kycStatus: isAdminUser ? 'approved' : 'pending',
+      pin: null,
+      pinAttempts: 0,
+      pinLocked: false,
+      joined: new Date().toLocaleString(),
+      email: null,
+      phone: null,
+      firstName: null,
+      lastName: null,
+      username: null,
+      virtualAccount: null,
+      virtualAccountNumber: null,
+      virtualAccountBank: null,
+      dailyDeposit: 0,
+      dailyTransfer: 0,
+      lastDeposit: null,
+      lastTransfer: null,
+      kycSubmittedDate: null,
+      kycApprovedDate: isAdminUser ? new Date().toISOString() : null,
+      kycRejectedDate: null,
+      kycRejectionReason: null
+    };
+    
+    // Initialize transactions for user
+    if (!transactions[userId]) {
+      transactions[userId] = [];
+    }
+    
+    // Save immediately
+    await saveData(usersFile, users);
+    await saveData(transactionsFile, transactions);
+  }
+  return users[userId];
+}
+
+// User methods for modules that expect them
+const userMethods = {
+  creditWallet: async (telegramId, amount) => {
+    const user = users[telegramId];
+    if (!user) {
+      throw new Error('User not found');
+    }
+    
+    user.wallet = (user.wallet || 0) + parseFloat(amount);
+    
+    // Save immediately
+    await saveData(usersFile, users);
+    
+    return user.wallet;
+  },
+
+  findById: async (telegramId) => {
+    return users[telegramId] || null;
+  },
+
+  update: async (telegramId, updateData) => {
+    const user = users[telegramId];
+    if (!user) {
+      await initUser(telegramId);
+    }
+    
+    Object.assign(users[telegramId], updateData);
+    
+    // Save immediately
+    await saveData(usersFile, users);
+    
+    return users[telegramId];
+  },
+
+  getKycStatus: async (telegramId) => {
+    const user = users[telegramId];
+    if (!user) {
+      await initUser(telegramId);
+    }
+    return users[telegramId]?.kycStatus || 'pending';
+  }
+};
+
 // Initialize virtualAccounts object with methods
 const virtualAccounts = {
   // Find virtual account by user ID
@@ -187,6 +273,42 @@ const virtualAccounts = {
   }
 };
 
+// Transaction methods
+const transactionMethods = {
+  create: async (txData) => {
+    const userId = txData.user_id || txData.telegramId;
+    if (!users[userId]) {
+      await initUser(userId);
+    }
+    
+    if (!transactions[userId]) {
+      transactions[userId] = [];
+    }
+    
+    const transaction = {
+      ...txData,
+      id: `tx_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+      created_at: new Date().toISOString()
+    };
+    
+    transactions[userId].push(transaction);
+    
+    // Save immediately
+    await saveData(transactionsFile, transactions);
+    
+    return transaction;
+  },
+
+  findByReference: async (reference) => {
+    for (const userId in transactions) {
+      const userTransactions = transactions[userId];
+      const found = userTransactions.find(tx => tx.reference === reference);
+      if (found) return found;
+    }
+    return null;
+  }
+};
+
 // Auto-save data every 30 seconds
 function setupAutoSave() {
   setInterval(async () => {
@@ -197,116 +319,6 @@ function setupAutoSave() {
     console.log('💾 Auto-saved all data');
   }, 30000);
 }
-
-// ==================== HELPER FUNCTIONS ====================
-async function initUser(userId) {
-  if (!users[userId]) {
-    const isAdminUser = userId.toString() === CONFIG.ADMIN_ID.toString();
-    
-    users[userId] = {
-      telegramId: userId,
-      wallet: 0,
-      kycStatus: isAdminUser ? 'approved' : 'pending',
-      pin: null,
-      pinAttempts: 0,
-      pinLocked: false,
-      joined: new Date().toLocaleString(),
-      email: null,
-      phone: null,
-      firstName: null,
-      lastName: null,
-      username: null,
-      virtualAccount: null,
-      virtualAccountNumber: null,
-      virtualAccountBank: null,
-      dailyDeposit: 0,
-      dailyTransfer: 0,
-      lastDeposit: null,
-      lastTransfer: null,
-      kycSubmittedDate: null,
-      kycApprovedDate: isAdminUser ? new Date().toISOString() : null,
-      kycRejectedDate: null,
-      kycRejectionReason: null
-    };
-    
-    // Initialize transactions for user
-    if (!transactions[userId]) {
-      transactions[userId] = [];
-    }
-    
-    // Save immediately
-    await saveData(usersFile, users);
-    await saveData(transactionsFile, transactions);
-  }
-  return users[userId];
-}
-
-// Add transaction methods with persistence
-transactions.create = async (txData) => {
-  const userId = txData.user_id || txData.telegramId;
-  if (!users[userId]) {
-    await initUser(userId);
-  }
-  
-  if (!transactions[userId]) {
-    transactions[userId] = [];
-  }
-  
-  const transaction = {
-    ...txData,
-    id: `tx_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
-    created_at: new Date().toISOString()
-  };
-  
-  transactions[userId].push(transaction);
-  
-  // Save immediately
-  await saveData(transactionsFile, transactions);
-  
-  return transaction;
-};
-
-transactions.findByReference = async (reference) => {
-  for (const userId in transactions) {
-    const userTransactions = transactions[userId];
-    const found = userTransactions.find(tx => tx.reference === reference);
-    if (found) return found;
-  }
-  return null;
-};
-
-// Add user methods with persistence
-users.creditWallet = async (telegramId, amount) => {
-  const user = users[telegramId];
-  if (!user) {
-    throw new Error('User not found');
-  }
-  
-  user.wallet = (user.wallet || 0) + parseFloat(amount);
-  
-  // Save immediately
-  await saveData(usersFile, users);
-  
-  return user.wallet;
-};
-
-users.findById = async (telegramId) => {
-  return users[telegramId] || null;
-};
-
-users.update = async (telegramId, updateData) => {
-  const user = users[telegramId];
-  if (!user) {
-    await initUser(telegramId);
-  }
-  
-  Object.assign(users[telegramId], updateData);
-  
-  // Save immediately
-  await saveData(usersFile, users);
-  
-  return users[telegramId];
-};
 
 // Session methods with persistence
 const sessionManager = {
@@ -331,9 +343,6 @@ const sessionManager = {
     }
   }
 };
-
-// Use deposit module's session manager
-const depositSessionManager = depositFunds.sessionManager;
 
 // Network mapping for VTU API
 const NETWORK_CODES = {
@@ -417,7 +426,15 @@ async function main() {
     // Setup deposit handlers
     console.log('🔧 Setting up deposit handlers...');
     try {
-      depositFunds.setupDepositHandlers(bot, users, virtualAccounts);
+      // Create a users object with all required methods for deposit module
+      const usersForDeposit = {
+        ...users,
+        creditWallet: userMethods.creditWallet,
+        findById: userMethods.findById,
+        update: userMethods.update
+      };
+      
+      depositFunds.setupDepositHandlers(bot, usersForDeposit, virtualAccounts);
       console.log('✅ Deposit handlers setup complete');
     } catch (error) {
       console.error('❌ Failed to setup deposit handlers:', error);
@@ -549,16 +566,51 @@ async function main() {
     // Wallet Balance
     bot.hears('💰 Wallet Balance', (ctx) => walletBalance.handleWallet(ctx, users, CONFIG));
     
-    // Deposit Funds - USING NEW MODULE
-    bot.hears('💳 Deposit Funds', (ctx) => {
-      const userId = ctx.from.id.toString();
-      return depositFunds.handleDeposit(ctx, users, virtualAccounts);
+    // Deposit Funds - WITH PROPER USER CHECK
+    bot.hears('💳 Deposit Funds', async (ctx) => {
+      try {
+        const userId = ctx.from.id.toString();
+        await initUser(userId);
+        
+        // Create users object with methods for deposit module
+        const usersWithMethods = {
+          ...users,
+          creditWallet: userMethods.creditWallet,
+          findById: userMethods.findById,
+          update: userMethods.update
+        };
+        
+        return depositFunds.handleDeposit(ctx, usersWithMethods, virtualAccounts);
+      } catch (error) {
+        console.error('❌ Deposit handler error:', error);
+        ctx.reply('❌ Error loading deposit. Please try again.');
+      }
     });
     
-    // Money Transfer - USING NEW MODULE
-    bot.hears('🏦 Money Transfer', (ctx) => {
-      const userId = ctx.from.id.toString();
-      return sendMoney.handleSendMoney(ctx, users, transactions);
+    // Money Transfer - WITH PROPER USER CHECK
+    bot.hears('🏦 Money Transfer', async (ctx) => {
+      try {
+        const userId = ctx.from.id.toString();
+        await initUser(userId);
+        
+        const user = users[userId];
+        if (!user) {
+          return await ctx.reply('❌ User not found. Please use /start first.');
+        }
+        
+        // Create users object with methods for send money module
+        const usersWithMethods = {
+          ...users,
+          creditWallet: userMethods.creditWallet,
+          findById: userMethods.findById,
+          update: userMethods.update
+        };
+        
+        return sendMoney.handleSendMoney(ctx, usersWithMethods, transactionMethods);
+      } catch (error) {
+        console.error('❌ Send money handler error:', error);
+        ctx.reply('❌ Error loading money transfer. Please try again.');
+      }
     });
     
     // Transaction History
@@ -706,7 +758,16 @@ async function main() {
     const dataCallbacks = buyData.getCallbacks ? buyData.getCallbacks(bot, users, sessionManager, CONFIG) : {};
     const adminCallbacks = admin.getCallbacks ? admin.getCallbacks(bot, users, transactions, CONFIG) : {};
     const kycCallbacks = kyc.getCallbacks ? kyc.getCallbacks(bot, users) : {};
-    const sendMoneyCallbacks = sendMoney.getCallbacks ? sendMoney.getCallbacks(bot, users, transactions, CONFIG) : {};
+    
+    // Get send money callbacks with proper user methods
+    const usersForSendMoney = {
+      ...users,
+      creditWallet: userMethods.creditWallet,
+      findById: userMethods.findById,
+      update: userMethods.update
+    };
+    
+    const sendMoneyCallbacks = sendMoney.getCallbacks ? sendMoney.getCallbacks(bot, usersForSendMoney, transactionMethods, CONFIG) : {};
     
     // Register Airtime callbacks
     console.log('📞 Registering airtime callbacks...');
@@ -856,16 +917,24 @@ async function main() {
         const text = ctx.message.text.trim();
         
         // Initialize user if not exists
-        const user = await initUser(userId);
+        await initUser(userId);
+        
+        // Create users object with methods for deposit text handler
+        const usersWithMethods = {
+          ...users,
+          creditWallet: userMethods.creditWallet,
+          findById: userMethods.findById,
+          update: userMethods.update
+        };
         
         // First, check if this is a deposit-related text
-        const depositHandled = await depositFunds.handleDepositText(ctx, text, users, virtualAccounts, bot);
+        const depositHandled = await depositFunds.handleDepositText(ctx, text, usersWithMethods, virtualAccounts, bot);
         if (depositHandled) {
           return;
         }
         
         // Handle send money text
-        const sendMoneyHandled = await sendMoney.handleText(ctx, text, users, transactions);
+        const sendMoneyHandled = await sendMoney.handleText(ctx, text, usersWithMethods, transactionMethods);
         if (sendMoneyHandled) {
           return;
         }
@@ -875,7 +944,7 @@ async function main() {
         if (userSession && userSession.action === 'airtime') {
           const airtimeTextHandler = require('./app/buyAirtime').handleText;
           if (airtimeTextHandler) {
-            await airtimeTextHandler(ctx, text, userSession, user, users, transactions, sessionManager, NETWORK_CODES, CONFIG);
+            await airtimeTextHandler(ctx, text, userSession, users[userId], users, transactions, sessionManager, NETWORK_CODES, CONFIG);
             return;
           }
         }
@@ -884,7 +953,7 @@ async function main() {
         if (userSession && userSession.action === 'data') {
           const dataTextHandler = require('./app/buyData').handleText;
           if (dataTextHandler) {
-            await dataTextHandler(ctx, text, userSession, user, users, transactions, sessionManager, NETWORK_CODES, CONFIG);
+            await dataTextHandler(ctx, text, userSession, users[userId], users, transactions, sessionManager, NETWORK_CODES, CONFIG);
             return;
           }
         }
