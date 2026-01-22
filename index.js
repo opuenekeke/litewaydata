@@ -1,4 +1,4 @@
-// index.js - COMPLETE FIXED VERSION WITH PROPER INITIALIZATION
+// index.js - COMPLETE FIXED VERSION WITH ALL FIXES
 require('dotenv').config();
 const { Telegraf, Markup } = require('telegraf');
 const axios = require('axios');
@@ -25,7 +25,7 @@ const walletBalance = require('./app/walletBalance');
 const transactionHistory = require('./app/transactionHistory');
 const admin = require('./app/admin');
 const kyc = require('./app/kyc');
-const sendMoney = require('./app/sendmoney'); // New send money module
+const sendMoney = require('./app/sendmoney');
 
 // ==================== CONFIGURATION ====================
 const CONFIG = {
@@ -35,11 +35,9 @@ const CONFIG = {
   SERVICE_FEE: 100,
   MIN_AIRTIME: 50,
   MAX_AIRTIME: 50000,
-  // BILLSTACK CONFIGURATION
   BILLSTACK_API_KEY: process.env.BILLSTACK_API_KEY,
   BILLSTACK_SECRET_KEY: process.env.BILLSTACK_SECRET_KEY,
   BILLSTACK_BASE_URL: process.env.BILLSTACK_BASE_URL || 'https://api.billstack.co',
-  // MONNIFY CONFIGURATION (for send money)
   MONNIFY_API_KEY: process.env.MONNIFY_API_KEY,
   MONNIFY_SECRET_KEY: process.env.MONNIFY_SECRET_KEY,
   MONNIFY_CONTRACT_CODE: process.env.MONNIFY_CONTRACT_CODE,
@@ -49,14 +47,12 @@ const CONFIG = {
 // ==================== PERSISTENT STORAGE SETUP ====================
 console.log('📁 Initializing persistent storage...');
 
-// Create data directory
 const dataDir = path.join(__dirname, 'data');
 const usersFile = path.join(dataDir, 'users.json');
 const transactionsFile = path.join(dataDir, 'transactions.json');
 const virtualAccountsFile = path.join(dataDir, 'virtualAccounts.json');
 const sessionsFile = path.join(dataDir, 'sessions.json');
 
-// Ensure files exist
 async function ensureFile(filePath, defaultData = {}) {
   try {
     await fs.access(filePath);
@@ -71,10 +67,8 @@ async function ensureFile(filePath, defaultData = {}) {
 
 async function initStorage() {
   try {
-    // Create data directory
     await fs.mkdir(dataDir, { recursive: true });
     
-    // Initialize all storage files
     const filesExist = {
       users: await ensureFile(usersFile, {}),
       transactions: await ensureFile(transactionsFile, {}),
@@ -109,7 +103,6 @@ async function saveData(filePath, data) {
   }
 }
 
-// Load initial data
 let users = {};
 let transactions = {};
 let virtualAccountsData = {};
@@ -127,7 +120,7 @@ async function initializeData() {
   }
 }
 
-// ==================== USER MANAGEMENT FUNCTIONS ====================
+// ==================== CORE FUNCTIONS ====================
 async function initUser(userId) {
   if (!users[userId]) {
     const isAdminUser = userId.toString() === CONFIG.ADMIN_ID.toString();
@@ -155,34 +148,32 @@ async function initUser(userId) {
       kycSubmittedDate: null,
       kycApprovedDate: isAdminUser ? new Date().toISOString() : null,
       kycRejectedDate: null,
-      kycRejectionReason: null
+      kycRejectionReason: null,
+      // Add KYC fields
+      kycSubmitted: false,
+      kycDocument: null,
+      kycDocumentType: null,
+      kycDocumentNumber: null
     };
     
-    // Initialize transactions for user
     if (!transactions[userId]) {
       transactions[userId] = [];
     }
     
-    // Save immediately
     await saveData(usersFile, users);
     await saveData(transactionsFile, transactions);
   }
   return users[userId];
 }
 
-// User methods for modules that expect them
+// ==================== USER METHODS ====================
 const userMethods = {
   creditWallet: async (telegramId, amount) => {
     const user = users[telegramId];
-    if (!user) {
-      throw new Error('User not found');
-    }
+    if (!user) throw new Error('User not found');
     
     user.wallet = (user.wallet || 0) + parseFloat(amount);
-    
-    // Save immediately
     await saveData(usersFile, users);
-    
     return user.wallet;
   },
 
@@ -192,30 +183,72 @@ const userMethods = {
 
   update: async (telegramId, updateData) => {
     const user = users[telegramId];
-    if (!user) {
-      await initUser(telegramId);
-    }
+    if (!user) await initUser(telegramId);
     
     Object.assign(users[telegramId], updateData);
-    
-    // Save immediately
     await saveData(usersFile, users);
-    
     return users[telegramId];
   },
 
   getKycStatus: async (telegramId) => {
     const user = users[telegramId];
+    if (!user) await initUser(telegramId);
+    return users[telegramId]?.kycStatus || 'pending';
+  },
+
+  checkKyc: async (telegramId) => {
+    const user = users[telegramId];
     if (!user) {
       await initUser(telegramId);
+      return false;
     }
-    return users[telegramId]?.kycStatus || 'pending';
+    return user.kycStatus === 'approved';
+  },
+
+  approveKyc: async (telegramId, adminId) => {
+    const user = users[telegramId];
+    if (!user) throw new Error('User not found');
+    
+    user.kycStatus = 'approved';
+    user.kycApprovedDate = new Date().toISOString();
+    await saveData(usersFile, users);
+    return user;
+  },
+
+  rejectKyc: async (telegramId, reason) => {
+    const user = users[telegramId];
+    if (!user) throw new Error('User not found');
+    
+    user.kycStatus = 'rejected';
+    user.kycRejectedDate = new Date().toISOString();
+    user.kycRejectionReason = reason;
+    await saveData(usersFile, users);
+    return user;
+  },
+
+  submitKyc: async (telegramId, kycData) => {
+    const user = users[telegramId];
+    if (!user) throw new Error('User not found');
+    
+    user.kycStatus = 'submitted';
+    user.kycSubmitted = true;
+    user.kycSubmittedDate = new Date().toISOString();
+    user.kycDocument = kycData.document;
+    user.kycDocumentType = kycData.documentType;
+    user.kycDocumentNumber = kycData.documentNumber;
+    
+    if (kycData.firstName) user.firstName = kycData.firstName;
+    if (kycData.lastName) user.lastName = kycData.lastName;
+    if (kycData.email) user.email = kycData.email;
+    if (kycData.phone) user.phone = kycData.phone;
+    
+    await saveData(usersFile, users);
+    return user;
   }
 };
 
-// Initialize virtualAccounts object with methods
+// ==================== VIRTUAL ACCOUNTS ====================
 const virtualAccounts = {
-  // Find virtual account by user ID
   findByUserId: async (telegramId) => {
     const user = users[telegramId];
     if (user && user.virtualAccount) {
@@ -227,12 +260,9 @@ const virtualAccounts = {
     return null;
   },
 
-  // Create new virtual account
   create: async (accountData) => {
     const userId = accountData.user_id;
-    if (!users[userId]) {
-      await initUser(userId);
-    }
+    if (!users[userId]) await initUser(userId);
     
     users[userId].virtualAccount = {
       bank_name: accountData.bank_name,
@@ -246,20 +276,15 @@ const virtualAccounts = {
     
     users[userId].virtualAccountNumber = accountData.account_number;
     users[userId].virtualAccountBank = accountData.bank_name;
-    
-    // Also save to virtualAccountsData for quick lookup
     virtualAccountsData[userId] = users[userId].virtualAccount;
     
-    // Save immediately
     await saveData(usersFile, users);
     await saveData(virtualAccountsFile, virtualAccountsData);
     
     return users[userId].virtualAccount;
   },
 
-  // Find virtual account by account number
   findByAccountNumber: async (accountNumber) => {
-    // First check virtualAccountsData
     for (const userId in virtualAccountsData) {
       const account = virtualAccountsData[userId];
       if (account.account_number === accountNumber) {
@@ -273,13 +298,11 @@ const virtualAccounts = {
   }
 };
 
-// Transaction methods
+// ==================== TRANSACTION METHODS ====================
 const transactionMethods = {
   create: async (txData) => {
     const userId = txData.user_id || txData.telegramId;
-    if (!users[userId]) {
-      await initUser(userId);
-    }
+    if (!users[userId]) await initUser(userId);
     
     if (!transactions[userId]) {
       transactions[userId] = [];
@@ -292,10 +315,7 @@ const transactionMethods = {
     };
     
     transactions[userId].push(transaction);
-    
-    // Save immediately
     await saveData(transactionsFile, transactions);
-    
     return transaction;
   },
 
@@ -309,22 +329,9 @@ const transactionMethods = {
   }
 };
 
-// Auto-save data every 30 seconds
-function setupAutoSave() {
-  setInterval(async () => {
-    await saveData(usersFile, users);
-    await saveData(transactionsFile, transactions);
-    await saveData(virtualAccountsFile, virtualAccountsData);
-    await saveData(sessionsFile, sessions);
-    console.log('💾 Auto-saved all data');
-  }, 30000);
-}
-
-// Session methods with persistence
+// ==================== SESSION MANAGER ====================
 const sessionManager = {
-  getSession: (userId) => {
-    return sessions[userId] || null;
-  },
+  getSession: (userId) => sessions[userId] || null,
   
   setSession: async (userId, sessionData) => {
     sessions[userId] = sessionData;
@@ -344,7 +351,17 @@ const sessionManager = {
   }
 };
 
-// Network mapping for VTU API
+// ==================== HELPER FUNCTIONS ====================
+function setupAutoSave() {
+  setInterval(async () => {
+    await saveData(usersFile, users);
+    await saveData(transactionsFile, transactions);
+    await saveData(virtualAccountsFile, virtualAccountsData);
+    await saveData(sessionsFile, sessions);
+    console.log('💾 Auto-saved all data');
+  }, 30000);
+}
+
 const NETWORK_CODES = {
   'MTN': '1',
   'GLO': '2',
@@ -352,7 +369,6 @@ const NETWORK_CODES = {
   'AIRTEL': '4'
 };
 
-// Available networks
 const AVAILABLE_NETWORKS = ['MTN', 'Glo', 'AIRTEL', '9MOBILE'];
 
 function isAdmin(userId) {
@@ -376,17 +392,10 @@ function escapeMarkdown(text) {
 
 function formatPhoneNumberForVTU(phone) {
   let cleaned = phone.replace(/\s+/g, '');
-  if (cleaned.startsWith('+234')) {
-    cleaned = '0' + cleaned.substring(4);
-  } else if (cleaned.startsWith('234')) {
-    cleaned = '0' + cleaned.substring(3);
-  }
-  if (!cleaned.startsWith('0')) {
-    cleaned = '0' + cleaned;
-  }
-  if (cleaned.length > 11) {
-    cleaned = cleaned.substring(0, 11);
-  }
+  if (cleaned.startsWith('+234')) cleaned = '0' + cleaned.substring(4);
+  else if (cleaned.startsWith('234')) cleaned = '0' + cleaned.substring(3);
+  if (!cleaned.startsWith('0')) cleaned = '0' + cleaned;
+  if (cleaned.length > 11) cleaned = cleaned.substring(0, 11);
   return cleaned;
 }
 
@@ -395,7 +404,6 @@ function validatePhoneNumber(phone) {
   return /^(0|234)(7|8|9)(0|1)\d{8}$/.test(cleaned);
 }
 
-// Helper function for email validation
 function isValidEmail(email) {
   if (!email) return false;
   const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -407,40 +415,32 @@ async function main() {
   try {
     console.log('🚀 VTU Bot Starting...');
     
-    // 1. Initialize storage first
+    // Initialize storage and data
     await initStorage();
-    
-    // 2. Initialize data
     await initializeData();
     
-    // 3. Create bot instance AFTER data is loaded
+    // Create bot instance
     const bot = new Telegraf(process.env.BOT_TOKEN);
     
-    // 4. Setup auto-save
+    // Setup auto-save
     setupAutoSave();
     
     // ==================== WEBHOOK SETUP ====================
     const app = express();
     app.use(express.json());
     
-    // Setup deposit handlers
     console.log('🔧 Setting up deposit handlers...');
     try {
-      // Create a users object with all required methods for deposit module
       const usersForDeposit = {
         ...users,
-        creditWallet: userMethods.creditWallet,
-        findById: userMethods.findById,
-        update: userMethods.update
+        ...userMethods
       };
-      
       depositFunds.setupDepositHandlers(bot, usersForDeposit, virtualAccounts);
       console.log('✅ Deposit handlers setup complete');
     } catch (error) {
       console.error('❌ Failed to setup deposit handlers:', error);
     }
     
-    // Webhook endpoint - BILLSTACK VERSION
     app.post('/billstack-webhook', depositFunds.handleBillstackWebhook(bot, users, transactions, virtualAccounts));
     
     const WEBHOOK_PORT = process.env.PORT || 3000;
@@ -455,61 +455,45 @@ async function main() {
         const user = await initUser(userId);
         const isUserAdmin = isAdmin(userId);
         
-        // Set user full name and email if not set
         if (!user.firstName) {
           user.firstName = ctx.from.first_name || '';
           user.lastName = ctx.from.last_name || '';
           user.username = ctx.from.username || null;
-          
-          // Save updated user info
           await saveData(usersFile, users);
         }
         
-        let keyboard;
+        let keyboard = isUserAdmin ? [
+          ['📞 Buy Airtime', '📡 Buy Data'],
+          ['💰 Wallet Balance', '💳 Deposit Funds'],
+          ['🏦 Money Transfer', '📜 Transaction History'],
+          ['🛂 KYC Status', '🛠️ Admin Panel'],
+          ['🆘 Help & Support']
+        ] : [
+          ['📞 Buy Airtime', '📡 Buy Data'],
+          ['💰 Wallet Balance', '💳 Deposit Funds'],
+          ['🏦 Money Transfer', '📜 Transaction History'],
+          ['🛂 KYC Status', '🆘 Help & Support']
+        ];
         
-        if (isUserAdmin) {
-          keyboard = [
-            ['📞 Buy Airtime', '📡 Buy Data'],
-            ['💰 Wallet Balance', '💳 Deposit Funds'],
-            ['🏦 Money Transfer', '📜 Transaction History'],
-            ['🛂 KYC Status', '🛠️ Admin Panel'],
-            ['🆘 Help & Support']
-          ];
-        } else {
-          keyboard = [
-            ['📞 Buy Airtime', '📡 Buy Data'],
-            ['💰 Wallet Balance', '💳 Deposit Funds'],
-            ['🏦 Money Transfer', '📜 Transaction History'],
-            ['🛂 KYC Status', '🆘 Help & Support']
-          ];
-        }
-        
-        // Check email and virtual account status for Billstack
         let emailStatus = '';
         let virtualAccountStatus = '';
-        
-        // Check if Billstack API is configured
         const billstackConfigured = CONFIG.BILLSTACK_API_KEY && CONFIG.BILLSTACK_SECRET_KEY;
         
         if (billstackConfigured) {
           if (!user.email || !isValidEmail(user.email)) {
-            emailStatus = `\n📧 *Email Status\\:* ❌ NOT SET\n` +
-              `_Set email via deposit process for virtual account_`;
+            emailStatus = `\n📧 *Email Status\\:* ❌ NOT SET\n_Set email via deposit process for virtual account_`;
           } else {
             emailStatus = `\n📧 *Email Status\\:* ✅ SET`;
           }
           
           if (!user.virtualAccount) {
-            virtualAccountStatus = `\n💳 *Virtual Account\\:* ❌ NOT CREATED\n` +
-              `_Create virtual account via deposit process_`;
+            virtualAccountStatus = `\n💳 *Virtual Account\\:* ❌ NOT CREATED\n_Create virtual account via deposit process_`;
           } else {
             virtualAccountStatus = `\n💳 *Virtual Account\\:* ✅ ACTIVE`;
           }
         } else {
-          // Billstack not configured yet
           emailStatus = `\n📧 *Email Status\\:* ${user.email ? '✅ SET' : '❌ NOT SET'}`;
-          virtualAccountStatus = `\n💳 *Virtual Account\\:* ⏳ CONFIG PENDING\n` +
-            `_Admin configuring Billstack API_`;
+          virtualAccountStatus = `\n💳 *Virtual Account\\:* ⏳ CONFIG PENDING\n_Admin configuring Billstack API_`;
         }
         
         await ctx.reply(
@@ -540,11 +524,47 @@ async function main() {
       }
     });
     
+    // ==================== KYC CHECK FUNCTION ====================
+    async function checkKYCAndPIN(userId, ctx) {
+      const user = users[userId];
+      if (!user) {
+        await ctx.reply('❌ User not found. Please use /start first.');
+        return false;
+      }
+      
+      // Check KYC
+      if (user.kycStatus !== 'approved') {
+        await ctx.reply(
+          '❌ *KYC VERIFICATION REQUIRED*\n\n' +
+          '📝 Your account needs verification\\.\n\n' +
+          `🛂 *KYC Status\\:* ${user.kycStatus.toUpperCase()}\n` +
+          '📞 *Contact admin\\:* @opuenekeke',
+          { parse_mode: 'MarkdownV2' }
+        );
+        return false;
+      }
+      
+      // Check PIN
+      if (!user.pin) {
+        await ctx.reply(
+          '❌ *TRANSACTION PIN NOT SET*\n\n' +
+          '🔐 *Set PIN\\:* `/setpin 1234`',
+          { parse_mode: 'MarkdownV2' }
+        );
+        return false;
+      }
+      
+      return true;
+    }
+    
     // ==================== MODULAR HANDLERS ====================
-    // Buy Airtime - FIXED
-    bot.hears('📞 Buy Airtime', (ctx) => {
+    bot.hears('📞 Buy Airtime', async (ctx) => {
       try {
         const userId = ctx.from.id.toString();
+        await initUser(userId);
+        
+        if (!await checkKYCAndPIN(userId, ctx)) return;
+        
         return buyAirtime.handleAirtime(ctx, users, sessionManager, CONFIG, NETWORK_CODES);
       } catch (error) {
         console.error('❌ Airtime handler error:', error);
@@ -552,10 +572,13 @@ async function main() {
       }
     });
     
-    // Buy Data - FIXED
-    bot.hears('📡 Buy Data', (ctx) => {
+    bot.hears('📡 Buy Data', async (ctx) => {
       try {
         const userId = ctx.from.id.toString();
+        await initUser(userId);
+        
+        if (!await checkKYCAndPIN(userId, ctx)) return;
+        
         return buyData.handleData(ctx, users, sessionManager, CONFIG, NETWORK_CODES);
       } catch (error) {
         console.error('❌ Data handler error:', error);
@@ -563,21 +586,34 @@ async function main() {
       }
     });
     
-    // Wallet Balance
     bot.hears('💰 Wallet Balance', (ctx) => walletBalance.handleWallet(ctx, users, CONFIG));
     
-    // Deposit Funds - WITH PROPER USER CHECK
     bot.hears('💳 Deposit Funds', async (ctx) => {
       try {
         const userId = ctx.from.id.toString();
         await initUser(userId);
         
-        // Create users object with methods for deposit module
+        const user = users[userId];
+        if (!user) {
+          await ctx.reply('❌ User not found. Please use /start first.');
+          return;
+        }
+        
+        // Check KYC for deposit
+        if (user.kycStatus !== 'approved') {
+          await ctx.reply(
+            '❌ *KYC VERIFICATION REQUIRED*\n\n' +
+            '📝 Your account needs verification for deposit\\.\n\n' +
+            `🛂 *KYC Status\\:* ${user.kycStatus.toUpperCase()}\n` +
+            '📞 *Contact admin\\:* @opuenekeke',
+            { parse_mode: 'MarkdownV2' }
+          );
+          return;
+        }
+        
         const usersWithMethods = {
           ...users,
-          creditWallet: userMethods.creditWallet,
-          findById: userMethods.findById,
-          update: userMethods.update
+          ...userMethods
         };
         
         return depositFunds.handleDeposit(ctx, usersWithMethods, virtualAccounts);
@@ -587,23 +623,16 @@ async function main() {
       }
     });
     
-    // Money Transfer - WITH PROPER USER CHECK
     bot.hears('🏦 Money Transfer', async (ctx) => {
       try {
         const userId = ctx.from.id.toString();
         await initUser(userId);
         
-        const user = users[userId];
-        if (!user) {
-          return await ctx.reply('❌ User not found. Please use /start first.');
-        }
+        if (!await checkKYCAndPIN(userId, ctx)) return;
         
-        // Create users object with methods for send money module
         const usersWithMethods = {
           ...users,
-          creditWallet: userMethods.creditWallet,
-          findById: userMethods.findById,
-          update: userMethods.update
+          ...userMethods
         };
         
         return sendMoney.handleSendMoney(ctx, usersWithMethods, transactionMethods);
@@ -613,16 +642,58 @@ async function main() {
       }
     });
     
-    // Transaction History
     bot.hears('📜 Transaction History', (ctx) => transactionHistory.handleHistory(ctx, users, transactions, CONFIG));
     
-    // KYC Status
-    bot.hears('🛂 KYC Status', (ctx) => kyc.handleKyc(ctx, users));
+    bot.hears('🛂 KYC Status', async (ctx) => {
+      try {
+        const userId = ctx.from.id.toString();
+        await initUser(userId);
+        
+        const user = users[userId];
+        if (!user) {
+          await ctx.reply('❌ User not found. Please use /start first.');
+          return;
+        }
+        
+        let statusEmoji = '⏳';
+        if (user.kycStatus === 'approved') statusEmoji = '✅';
+        else if (user.kycStatus === 'rejected') statusEmoji = '❌';
+        else if (user.kycStatus === 'submitted') statusEmoji = '📋';
+        
+        let kycInfo = '';
+        if (user.kycSubmittedDate) {
+          kycInfo += `📅 *Submitted\\:* ${user.kycSubmittedDate}\n`;
+        }
+        if (user.kycApprovedDate) {
+          kycInfo += `✅ *Approved\\:* ${user.kycApprovedDate}\n`;
+        }
+        if (user.kycRejectedDate) {
+          kycInfo += `❌ *Rejected\\:* ${user.kycRejectedDate}\n`;
+          if (user.kycRejectionReason) {
+            kycInfo += `📝 *Reason\\:* ${escapeMarkdown(user.kycRejectionReason)}\n`;
+          }
+        }
+        
+        await ctx.reply(
+          `🛂 *KYC STATUS*\n\n` +
+          `👤 *User ID\\:* ${userId}\n` +
+          `📛 *Name\\:* ${user.firstName || ''} ${user.lastName || ''}\n` +
+          `📧 *Email\\:* ${user.email || 'Not set'}\n` +
+          `📱 *Phone\\:* ${user.phone || 'Not set'}\n\n` +
+          `🛂 *Status\\:* ${statusEmoji} ${user.kycStatus.toUpperCase()}\n\n` +
+          `${kycInfo}\n` +
+          `📞 *Support\\:* @opuenekeke`,
+          { parse_mode: 'MarkdownV2' }
+        );
+        
+      } catch (error) {
+        console.error('❌ KYC status error:', error);
+        ctx.reply('❌ Error checking KYC status. Please try again.');
+      }
+    });
     
-    // Admin Panel
     bot.hears('🛠️ Admin Panel', (ctx) => admin.handleAdminPanel(ctx, users, transactions, CONFIG));
     
-    // Help & Support
     bot.hears('🆘 Help & Support', async (ctx) => {
       try {
         await ctx.reply(
@@ -685,7 +756,6 @@ async function main() {
         user.pinAttempts = 0;
         user.pinLocked = false;
         
-        // Save immediately
         await saveData(usersFile, users);
         
         await ctx.reply('✅ PIN set successfully\\! Use this PIN to confirm transactions\\.', { parse_mode: 'MarkdownV2' });
@@ -700,11 +770,8 @@ async function main() {
         const userId = ctx.from.id.toString();
         const user = await initUser(userId);
         
-        // Check email and virtual account status for Billstack
         let emailStatus = '';
         let virtualAccountStatus = '';
-        
-        // Check if Billstack API is configured
         const billstackConfigured = CONFIG.BILLSTACK_API_KEY && CONFIG.BILLSTACK_SECRET_KEY;
         
         if (billstackConfigured) {
@@ -720,7 +787,6 @@ async function main() {
             virtualAccountStatus = `💳 *Virtual Account\\:* ✅ ACTIVE\n`;
           }
         } else {
-          // Billstack not configured yet
           emailStatus = `📧 *Email Status\\:* ${user.email ? '✅ SET' : '❌ NOT SET'}\n`;
           virtualAccountStatus = `💳 *Virtual Account\\:* ⏳ CONFIG PENDING\n`;
         }
@@ -753,26 +819,20 @@ async function main() {
     // ==================== CALLBACK HANDLERS ====================
     console.log('\n📋 REGISTERING CALLBACK HANDLERS...');
     
-    // Get callbacks from modules
     const airtimeCallbacks = buyAirtime.getCallbacks ? buyAirtime.getCallbacks(bot, users, sessionManager, CONFIG, NETWORK_CODES) : {};
     const dataCallbacks = buyData.getCallbacks ? buyData.getCallbacks(bot, users, sessionManager, CONFIG) : {};
     const adminCallbacks = admin.getCallbacks ? admin.getCallbacks(bot, users, transactions, CONFIG) : {};
     const kycCallbacks = kyc.getCallbacks ? kyc.getCallbacks(bot, users) : {};
     
-    // Get send money callbacks with proper user methods
     const usersForSendMoney = {
       ...users,
-      creditWallet: userMethods.creditWallet,
-      findById: userMethods.findById,
-      update: userMethods.update
+      ...userMethods
     };
     
     const sendMoneyCallbacks = sendMoney.getCallbacks ? sendMoney.getCallbacks(bot, usersForSendMoney, transactionMethods, CONFIG) : {};
     
-    // Register Airtime callbacks
     console.log('📞 Registering airtime callbacks...');
     Object.entries(airtimeCallbacks).forEach(([pattern, handler]) => {
-      console.log(`   Airtime: ${pattern}`);
       if (pattern.includes('(') || pattern.includes('.') || pattern.includes('+') || pattern.includes('*')) {
         bot.action(new RegExp(`^${pattern}$`), handler);
       } else {
@@ -780,10 +840,8 @@ async function main() {
       }
     });
     
-    // Register Data callbacks
     console.log('📡 Registering data callbacks...');
     Object.entries(dataCallbacks).forEach(([pattern, handler]) => {
-      console.log(`   Data: ${pattern}`);
       if (pattern.includes('(') || pattern.includes('.') || pattern.includes('+') || pattern.includes('*')) {
         bot.action(new RegExp(`^${pattern}$`), handler);
       } else {
@@ -791,10 +849,8 @@ async function main() {
       }
     });
     
-    // Register Admin callbacks
     console.log('🛠️ Registering admin callbacks...');
     Object.entries(adminCallbacks).forEach(([pattern, handler]) => {
-      console.log(`   Admin: ${pattern}`);
       if (pattern.includes('(') || pattern.includes('.') || pattern.includes('+') || pattern.includes('*')) {
         bot.action(new RegExp(`^${pattern}$`), handler);
       } else {
@@ -802,10 +858,8 @@ async function main() {
       }
     });
     
-    // Register KYC callbacks
     console.log('🛂 Registering KYC callbacks...');
     Object.entries(kycCallbacks).forEach(([pattern, handler]) => {
-      console.log(`   KYC: ${pattern}`);
       if (pattern.includes('(') || pattern.includes('.') || pattern.includes('+') || pattern.includes('*')) {
         bot.action(new RegExp(`^${pattern}$`), handler);
       } else {
@@ -813,10 +867,8 @@ async function main() {
       }
     });
     
-    // Register Send Money callbacks
     console.log('🏦 Registering send money callbacks...');
     Object.entries(sendMoneyCallbacks).forEach(([pattern, handler]) => {
-      console.log(`   Send Money: ${pattern}`);
       if (pattern.includes('(') || pattern.includes('.') || pattern.includes('+') || pattern.includes('*')) {
         bot.action(new RegExp(`^${pattern}$`), handler);
       } else {
@@ -831,69 +883,33 @@ async function main() {
         const user = await initUser(userId);
         const isUserAdmin = isAdmin(userId);
         
-        let keyboard;
-        
-        if (isUserAdmin) {
-          keyboard = [
-            ['📞 Buy Airtime', '📡 Buy Data'],
-            ['💰 Wallet Balance', '💳 Deposit Funds'],
-            ['🏦 Money Transfer', '📜 Transaction History'],
-            ['🛂 KYC Status', '🛠️ Admin Panel'],
-            ['🆘 Help & Support']
-          ];
-        } else {
-          keyboard = [
-            ['📞 Buy Airtime', '📡 Buy Data'],
-            ['💰 Wallet Balance', '💳 Deposit Funds'],
-            ['🏦 Money Transfer', '📜 Transaction History'],
-            ['🛂 KYC Status', '🆘 Help & Support']
-          ];
-        }
-        
-        // Check email and virtual account status for Billstack
-        let emailStatus = '';
-        let virtualAccountStatus = '';
-        
-        // Check if Billstack API is configured
-        const billstackConfigured = CONFIG.BILLSTACK_API_KEY && CONFIG.BILLSTACK_SECRET_KEY;
-        
-        if (billstackConfigured) {
-          if (!user.email || !isValidEmail(user.email)) {
-            emailStatus = `\n📧 *Email Status\\:* ❌ NOT SET\n` +
-              `_Set email via deposit process for virtual account_`;
-          } else {
-            emailStatus = `\n📧 *Email Status\\:* ✅ SET`;
-          }
-          
-          if (!user.virtualAccount) {
-            virtualAccountStatus = `\n💳 *Virtual Account\\:* ❌ NOT CREATED\n` +
-              `_Create virtual account via deposit process_`;
-          } else {
-            virtualAccountStatus = `\n💳 *Virtual Account\\:* ✅ ACTIVE`;
-          }
-        } else {
-          // Billstack not configured yet
-          emailStatus = `\n📧 *Email Status\\:* ${user.email ? '✅ SET' : '❌ NOT SET'}`;
-          virtualAccountStatus = `\n💳 *Virtual Account\\:* ⏳ CONFIG PENDING\n` +
-            `_Admin configuring Billstack API_`;
-        }
+        let keyboard = isUserAdmin ? [
+          ['📞 Buy Airtime', '📡 Buy Data'],
+          ['💰 Wallet Balance', '💳 Deposit Funds'],
+          ['🏦 Money Transfer', '📜 Transaction History'],
+          ['🛂 KYC Status', '🛠️ Admin Panel'],
+          ['🆘 Help & Support']
+        ] : [
+          ['📞 Buy Airtime', '📡 Buy Data'],
+          ['💰 Wallet Balance', '💳 Deposit Funds'],
+          ['🏦 Money Transfer', '📜 Transaction History'],
+          ['🛂 KYC Status', '🆘 Help & Support']
+        ];
         
         await ctx.editMessageText(
           `🌟 *Welcome to Liteway VTU Bot\\!*\n\n` +
-          `⚡ *Quick Start\\:*\n` +
-          `1\\. Set PIN\\: /setpin 1234\n` +
-          `2\\. Get KYC approved\n` +
-          `3\\. Set email for virtual account\n` +
-          `4\\. Deposit funds\n` +
-          `5\\. Start buying\\!\n\n` +
-          `📱 *Services\\:*\n` +
-          `• 📞 Airtime \\(All networks\\)\n` +
-          `• 📡 Data bundles\n` +
-          `• 💰 Wallet system\n` +
-          `• 💳 Deposit via Virtual Account\n` +
-          `• 🏦 Transfer to any bank\n\n` +
-          `${emailStatus}` +
-          `${virtualAccountStatus}\n\n` +
+          `🛂 *KYC Status\\:* ${user.kycStatus.toUpperCase()}\n` +
+          `💵 *Balance\\:* ${formatCurrency(user.wallet)}\n\n` +
+          `📱 *Available Services\\:*\n` +
+          `• 📞 Buy Airtime\n` +
+          `• 📡 Buy Data\n` +
+          `• 💰 Wallet Balance\n` +
+          `• 💳 Deposit Funds\n` +
+          `• 🏦 Money Transfer\n` +
+          `• 📜 Transaction History\n` +
+          `• 🛂 KYC Status\n` +
+          `${isUserAdmin ? '• 🛠️ Admin Panel\n' : ''}` +
+          `• 🆘 Help & Support\n\n` +
           `📞 *Support\\:* @opuenekeke`,
           {
             parse_mode: 'MarkdownV2',
@@ -916,28 +932,20 @@ async function main() {
         const userId = ctx.from.id.toString();
         const text = ctx.message.text.trim();
         
-        // Initialize user if not exists
         await initUser(userId);
         
-        // Create users object with methods for deposit text handler
         const usersWithMethods = {
           ...users,
-          creditWallet: userMethods.creditWallet,
-          findById: userMethods.findById,
-          update: userMethods.update
+          ...userMethods
         };
         
-        // First, check if this is a deposit-related text
+        // Handle deposit text
         const depositHandled = await depositFunds.handleDepositText(ctx, text, usersWithMethods, virtualAccounts, bot);
-        if (depositHandled) {
-          return;
-        }
+        if (depositHandled) return;
         
         // Handle send money text
         const sendMoneyHandled = await sendMoney.handleText(ctx, text, usersWithMethods, transactionMethods);
-        if (sendMoneyHandled) {
-          return;
-        }
+        if (sendMoneyHandled) return;
         
         // Handle airtime text
         const userSession = sessionManager.getSession(userId);
@@ -976,7 +984,7 @@ async function main() {
     
     // ==================== LAUNCH BOT ====================
     bot.launch().then(() => {
-      console.log('🚀 VTU Bot with BILLSTACK VIRTUAL ACCOUNT DEPOSITS!');
+      console.log('🚀 VTU Bot Launched Successfully!');
       console.log(`👑 Admin ID: ${CONFIG.ADMIN_ID}`);
       console.log(`🔑 VTU API Key: ${CONFIG.VTU_API_KEY ? '✅ SET' : '❌ NOT SET'}`);
       console.log(`🔑 Billstack API Key: ${CONFIG.BILLSTACK_API_KEY ? '✅ SET' : '❌ NOT SET'}`);
@@ -984,47 +992,17 @@ async function main() {
       console.log(`🔑 Monnify API Key: ${CONFIG.MONNIFY_API_KEY ? '✅ SET' : '❌ NOT SET'}`);
       console.log(`🔐 Monnify Secret Key: ${CONFIG.MONNIFY_SECRET_KEY ? '✅ SET' : '❌ NOT SET'}`);
       console.log(`🌐 Webhook Server: http://localhost:${WEBHOOK_PORT}/billstack-webhook`);
-      console.log(`💾 Persistent Storage: Enabled (auto-save every 30s)`);
       
-      if (CONFIG.BILLSTACK_API_KEY && CONFIG.BILLSTACK_SECRET_KEY) {
-        console.log('\n✅ BILLSTACK VIRTUAL ACCOUNT FEATURES:');
-        console.log('1. ✅ Email verification required');
-        console.log('2. ✅ NO BVN required');
-        console.log('3. ✅ Virtual account generation after KYC');
-        console.log('4. ✅ Webhook integration for automatic deposits');
-        console.log('5. ✅ Real-time wallet funding');
-        console.log('6. ✅ WEMA BANK virtual accounts');
-      } else {
-        console.log('\n⚠️ BILLSTACK NOT CONFIGURED:');
-        console.log('1. ⚠️ Add BILLSTACK_API_KEY to environment');
-        console.log('2. ⚠️ Add BILLSTACK_SECRET_KEY to environment');
-        console.log('3. ⚠️ Users can still set email for future use');
-      }
-      
-      if (CONFIG.MONNIFY_API_KEY && CONFIG.MONNIFY_SECRET_KEY) {
-        console.log('\n✅ MONNIFY BANK TRANSFER FEATURES:');
-        console.log('1. ✅ Automatic account resolution');
-        console.log('2. ✅ Real-time bank transfers');
-        console.log('3. ✅ Support for all Nigerian banks');
-        console.log('4. ✅ Secure transaction processing');
-      } else {
-        console.log('\n⚠️ MONNIFY NOT CONFIGURED:');
-        console.log('1. ⚠️ Add MONNIFY_API_KEY to environment');
-        console.log('2. ⚠️ Add MONNIFY_SECRET_KEY to environment');
-        console.log('3. ⚠️ Add MONNIFY_CONTRACT_CODE to environment');
-      }
-      
-      console.log('\n✅ ALL CORE FEATURES WORKING:');
-      console.log('• 📞 Buy Airtime (Working)');
-      console.log('• 📡 Buy Data (Working)');
-      console.log('• 💰 Wallet Balance (Working)');
-      console.log('• 💳 Deposit Funds (Email + Virtual Account)');
-      console.log('• 🏦 Money Transfer (Monnify Integration)');
-      console.log('• 📜 Transaction History (Working)');
-      console.log('• 🛂 KYC Status (Working)');
-      console.log('• 🛠️ Admin Panel (Working)');
-      console.log('• 🆘 Help & Support (Working)');
-      console.log('• 💾 Persistent Storage (Enabled)');
+      console.log('\n✅ ALL CORE FEATURES:');
+      console.log('• 📞 Buy Airtime');
+      console.log('• 📡 Buy Data');
+      console.log('• 💰 Wallet Balance');
+      console.log('• 💳 Deposit Funds');
+      console.log('• 🏦 Money Transfer');
+      console.log('• 📜 Transaction History');
+      console.log('• 🛂 KYC Status (FIXED)');
+      console.log('• 🛠️ Admin Panel');
+      console.log('• 🆘 Help & Support');
       console.log('\n⚡ BOT IS READY!');
     }).catch(err => {
       console.error('❌ Bot launch failed:', err);
@@ -1038,27 +1016,21 @@ async function main() {
 // ==================== GRACEFUL SHUTDOWN ====================
 process.once('SIGINT', async () => {
   console.log('\n🛑 Shutting down...');
-  
-  // Save all data before shutdown
   console.log('💾 Saving all data before shutdown...');
   await saveData(usersFile, users);
   await saveData(transactionsFile, transactions);
   await saveData(virtualAccountsFile, virtualAccountsData);
   await saveData(sessionsFile, sessions);
-  
   bot.stop('SIGINT');
 });
 
 process.once('SIGTERM', async () => {
   console.log('\n🛑 Shutting down...');
-  
-  // Save all data before shutdown
   console.log('💾 Saving all data before shutdown...');
   await saveData(usersFile, users);
   await saveData(transactionsFile, transactions);
   await saveData(virtualAccountsFile, virtualAccountsData);
   await saveData(sessionsFile, sessions);
-  
   bot.stop('SIGTERM');
 });
 
