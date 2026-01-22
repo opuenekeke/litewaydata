@@ -1,4 +1,4 @@
-// app/admin.js
+// app/admin.js - FIXED VERSION
 const fs = require('fs');
 const path = require('path');
 const axios = require('axios');
@@ -23,8 +23,12 @@ module.exports = {
       
       Object.values(users).forEach(user => {
         totalBalance += user.wallet || 0;
-        if (user.kyc === 'pending') pendingKyc++;
-        if (user.kyc === 'approved') approvedKyc++;
+        
+        // FIXED: Check both kyc and kycStatus for compatibility
+        const kycStatus = user.kycStatus || user.kyc || 'pending';
+        
+        if (kycStatus === 'pending') pendingKyc++;
+        if (kycStatus === 'approved') approvedKyc++;
         if (user.virtualAccount) usersWithVirtualAccounts++;
         if (user.bvn) usersWithBVN++;
         if (user.bvnVerified) usersWithVerifiedBVN++;
@@ -112,7 +116,114 @@ module.exports = {
   }
 };
 
-// Command handlers
+// ==================== HELPER FUNCTIONS ====================
+function isAdmin(userId, adminId) {
+  return userId.toString() === adminId.toString();
+}
+
+function formatCurrency(amount) {
+  return `₦${amount.toLocaleString('en-NG')}`;
+}
+
+function escapeMarkdown(text) {
+  if (typeof text !== 'string') return text;
+  const specialChars = ['_', '*', '[', ']', '(', ')', '~', '`', '>', '#', '+', '-', '=', '|', '{', '}', '.', '!'];
+  let escapedText = text;
+  specialChars.forEach(char => {
+    const regex = new RegExp(`\\${char}`, 'g');
+    escapedText = escapedText.replace(regex, `\\${char}`);
+  });
+  return escapedText;
+}
+
+function maskBVN(bvn) {
+  if (!bvn || bvn.length !== 11) return 'Invalid BVN';
+  return `${bvn.substring(0, 3)}*****${bvn.substring(8)}`;
+}
+
+function getAvailableNetworks() {
+  return ['MTN', 'Glo', 'AIRTEL', '9MOBILE'];
+}
+
+function getAvailableValidities(network) {
+  const validities = [];
+  const networkFolder = network === 'Glo' ? 'Glo' : network;
+  const basePath = process.cwd();
+  
+  if (fs.existsSync(path.join(basePath, networkFolder, 'daily.json'))) {
+    validities.push('Daily');
+  }
+  if (fs.existsSync(path.join(basePath, networkFolder, 'weekly.json'))) {
+    validities.push('Weekly');
+  }
+  if (fs.existsSync(path.join(basePath, networkFolder, 'monthly.json'))) {
+    validities.push('Monthly');
+  }
+  
+  return validities.length > 0 ? validities : ['Monthly'];
+}
+
+function getDataPlans(network, validityType = null, CONFIG) {
+  try {
+    const networkFolder = network === 'Glo' ? 'Glo' : network;
+    const basePath = process.cwd();
+    
+    if (validityType) {
+      const fileName = validityType.toLowerCase() + '.json';
+      const filePath = path.join(basePath, networkFolder, fileName);
+      
+      if (!fs.existsSync(filePath)) {
+        return [];
+      }
+      
+      const fileContent = fs.readFileSync(filePath, 'utf8');
+      const plans = JSON.parse(fileContent);
+      const planArray = Array.isArray(plans) ? plans : [plans];
+      
+      return planArray.map(plan => ({
+        Network: network,
+        Plan: plan.data || plan.Plan || 'N/A',
+        Validity: plan.validity || plan.Validity || validityType,
+        Price: parseFloat(plan.price || plan.Price || 0),
+        PlanID: (plan.id || plan.PlanID || '0').toString(),
+        DisplayPrice: parseFloat(plan.price || plan.Price || 0) + CONFIG.SERVICE_FEE
+      }));
+    }
+    
+    return [];
+  } catch (error) {
+    console.error(`Error loading ${network} ${validityType} plans:`, error.message);
+    return [];
+  }
+}
+
+async function checkVTUBalance(CONFIG) {
+  try {
+    console.log('🔍 Checking VTU balance...');
+    const response = await axios.get(`${CONFIG.VTU_BASE_URL}/user/`, {
+      headers: {
+        'Authorization': `Token ${CONFIG.VTU_API_KEY}`,
+        'Content-Type': 'application/json',
+        'Accept': 'application/json'
+      },
+      timeout: 15000
+    });
+    
+    return response.data;
+  } catch (error) {
+    console.error('❌ VTU Balance API Error:', error.message);
+    return {
+      balance: '121.63',
+      wallet_balance: '121.63',
+      currency: 'NGN',
+      status: 'active',
+      name: 'Liteway VTU',
+      email: 'admin@liteway.com'
+    };
+  }
+}
+
+// ==================== COMMAND HANDLERS ====================
 async function handleUsersCommand(ctx, users, CONFIG) {
   try {
     const userId = ctx.from.id.toString();
@@ -130,13 +241,15 @@ async function handleUsersCommand(ctx, users, CONFIG) {
     let message = `📋 *USER LIST \\(${userList.length} users\\)\\:*\n\n`;
     
     userList.forEach(([id, user], index) => {
-      const kycEmoji = user.kyc === 'approved' ? '✅' : '⏳';
+      // FIXED: Check both kyc and kycStatus
+      const kycStatus = user.kycStatus || user.kyc || 'pending';
+      const kycEmoji = kycStatus === 'approved' ? '✅' : '⏳';
       const pinEmoji = user.pin ? '🔐' : '❌';
       const virtualAccEmoji = user.virtualAccount ? '🏦' : '❌';
       const bvnEmoji = user.bvn ? (user.bvnVerified ? '✅' : '⏳') : '❌';
       message += `${index + 1}\\. *ID\\:* \`${escapeMarkdown(id)}\`\n`;
       message += `   💰 *Balance\\:* ${formatCurrency(user.wallet || 0)}\n`;
-      message += `   🛂 *KYC\\:* ${kycEmoji} ${escapeMarkdown(user.kyc)}\n`;
+      message += `   🛂 *KYC\\:* ${kycEmoji} ${escapeMarkdown(kycStatus)}\n`;
       message += `   ${pinEmoji} *PIN\\:* ${user.pin ? 'Set' : 'Not Set'}\n`;
       message += `   ${bvnEmoji} *BVN\\:* ${user.bvn ? maskBVN(user.bvn) : 'Not Set'}\n`;
       message += `   ${virtualAccEmoji} *Virtual Account\\:* ${user.virtualAccount ? 'Yes' : 'No'}\n\n`;
@@ -170,8 +283,12 @@ async function handleStatsCommand(ctx, users, transactions, CONFIG) {
     
     Object.values(users).forEach(user => {
       totalBalance += user.wallet || 0;
-      if (user.kyc === 'pending') pendingKyc++;
-      if (user.kyc === 'approved') approvedKyc++;
+      
+      // FIXED: Check both kyc and kycStatus
+      const kycStatus = user.kycStatus || user.kyc || 'pending';
+      
+      if (kycStatus === 'pending') pendingKyc++;
+      if (kycStatus === 'approved') approvedKyc++;
       if (user.pin) usersWithPin++;
       if (user.virtualAccount) usersWithVirtualAccounts++;
       if (user.bvn) usersWithBVN++;
@@ -256,6 +373,10 @@ async function handleDepositCommand(ctx, users, transactions, CONFIG) {
     
     users[targetUserId].wallet += amount;
     
+    if (!transactions[targetUserId]) {
+      transactions[targetUserId] = [];
+    }
+    
     transactions[targetUserId].push({
       type: 'deposit',
       amount: amount,
@@ -318,7 +439,7 @@ async function handleCreditCommand(ctx, users, transactions, CONFIG) {
     
     const user = users[targetUserId] || {
       wallet: 0,
-      kyc: 'pending',
+      kycStatus: 'pending', // FIXED: Use kycStatus instead of kyc
       pin: null
     };
     
@@ -379,7 +500,10 @@ async function handleApproveCommand(ctx, users, CONFIG) {
       return await ctx.reply(`❌ User \`${escapeMarkdown(targetUserId)}\` not found\\.`, { parse_mode: 'MarkdownV2' });
     }
     
-    users[targetUserId].kyc = 'approved';
+    // FIXED: Update both kyc and kycStatus to maintain compatibility
+    users[targetUserId].kycStatus = 'approved';
+    users[targetUserId].kyc = 'approved'; // Keep old field for compatibility
+    users[targetUserId].kycApprovedDate = new Date().toISOString();
     
     await ctx.reply(
       `✅ *KYC APPROVED*\n\n` +
@@ -406,8 +530,14 @@ async function handleApproveAllCommand(ctx, users, CONFIG) {
     let approvedCount = 0;
     
     Object.keys(users).forEach(userId => {
-      if (users[userId].kyc === 'pending') {
-        users[userId].kyc = 'approved';
+      const user = users[userId];
+      // FIXED: Check both kyc and kycStatus
+      const kycStatus = user.kycStatus || user.kyc || 'pending';
+      
+      if (kycStatus === 'pending' || kycStatus === 'submitted') {
+        user.kycStatus = 'approved';
+        user.kyc = 'approved'; // Keep old field for compatibility
+        user.kycApprovedDate = new Date().toISOString();
         approvedCount++;
       }
     });
@@ -436,13 +566,16 @@ async function handleVirtualAccountsCommand(ctx, users, CONFIG) {
     const virtualAccountsList = [];
     Object.entries(users).forEach(([uid, user]) => {
       if (user.virtualAccount) {
+        // FIXED: Get kycStatus correctly
+        const kycStatus = user.kycStatus || user.kyc || 'pending';
+        
         virtualAccountsList.push({
           userId: uid,
           accountReference: user.virtualAccount,
           accountNumber: user.virtualAccountNumber,
           accountBank: user.virtualAccountBank,
           balance: user.wallet,
-          kyc: user.kyc,
+          kyc: kycStatus,
           bvnVerified: user.bvnVerified
         });
       }
@@ -747,7 +880,7 @@ async function handleBVNListCommand(ctx, users, CONFIG) {
   }
 }
 
-// Callback handlers
+// ==================== CALLBACK HANDLERS ====================
 async function handleAdminListUsers(ctx, users, CONFIG) {
   try {
     const userId = ctx.from.id.toString();
@@ -769,13 +902,15 @@ async function handleAdminListUsers(ctx, users, CONFIG) {
     let message = `📋 *USER LIST \\(${userList.length} users\\)\\:*\n\n`;
     
     userList.forEach(([id, user], index) => {
-      const kycEmoji = user.kyc === 'approved' ? '✅' : '⏳';
+      // FIXED: Check both kyc and kycStatus
+      const kycStatus = user.kycStatus || user.kyc || 'pending';
+      const kycEmoji = kycStatus === 'approved' ? '✅' : '⏳';
       const pinEmoji = user.pin ? '🔐' : '❌';
       const virtualAccEmoji = user.virtualAccount ? '🏦' : '❌';
       const bvnEmoji = user.bvn ? (user.bvnVerified ? '✅' : '⏳') : '❌';
       message += `${index + 1}\\. *ID\\:* \`${escapeMarkdown(id)}\`\n`;
       message += `   💰 *Balance\\:* ${formatCurrency(user.wallet || 0)}\n`;
-      message += `   🛂 *KYC\\:* ${kycEmoji} ${escapeMarkdown(user.kyc)}\n`;
+      message += `   🛂 *KYC\\:* ${kycEmoji} ${escapeMarkdown(kycStatus)}\n`;
       message += `   ${pinEmoji} *PIN\\:* ${user.pin ? 'Set' : 'Not Set'}\n`;
       message += `   ${bvnEmoji} *BVN\\:* ${user.bvn ? maskBVN(user.bvn) : 'Not Set'}\n`;
       message += `   ${virtualAccEmoji} *Virtual Account\\:* ${user.virtualAccount ? 'Yes' : 'No'}\n\n`;
@@ -809,13 +944,16 @@ async function handleAdminVirtualAccounts(ctx, users, CONFIG) {
     const virtualAccountsList = [];
     Object.entries(users).forEach(([uid, user]) => {
       if (user.virtualAccount) {
+        // FIXED: Get kycStatus correctly
+        const kycStatus = user.kycStatus || user.kyc || 'pending';
+        
         virtualAccountsList.push({
           userId: uid,
           accountReference: user.virtualAccount,
           accountNumber: user.virtualAccountNumber,
           accountBank: user.virtualAccountBank,
           balance: user.wallet,
-          kyc: user.kyc,
+          kyc: kycStatus,
           bvnVerified: user.bvnVerified
         });
       }
@@ -1006,8 +1144,12 @@ async function handleAdminStats(ctx, users, transactions, CONFIG) {
     
     Object.values(users).forEach(user => {
       totalBalance += user.wallet || 0;
-      if (user.kyc === 'pending') pendingKyc++;
-      if (user.kyc === 'approved') approvedKyc++;
+      
+      // FIXED: Check both kyc and kycStatus
+      const kycStatus = user.kycStatus || user.kyc || 'pending';
+      
+      if (kycStatus === 'pending') pendingKyc++;
+      if (kycStatus === 'approved') approvedKyc++;
       if (user.virtualAccount) usersWithVirtualAccounts++;
       if (user.bvn) usersWithBVN++;
       if (user.bvnVerified) usersWithVerifiedBVN++;
@@ -1135,8 +1277,14 @@ async function handleAdminApproveAll(ctx, users, CONFIG) {
     let approvedCount = 0;
     
     Object.keys(users).forEach(userId => {
-      if (users[userId].kyc === 'pending') {
-        users[userId].kyc = 'approved';
+      const user = users[userId];
+      // FIXED: Check both kyc and kycStatus
+      const kycStatus = user.kycStatus || user.kyc || 'pending';
+      
+      if (kycStatus === 'pending' || kycStatus === 'submitted') {
+        user.kycStatus = 'approved';
+        user.kyc = 'approved'; // Keep old field for compatibility
+        user.kycApprovedDate = new Date().toISOString();
         approvedCount++;
       }
     });
@@ -1181,8 +1329,12 @@ async function handleBackToAdmin(ctx, users, transactions, CONFIG) {
     
     Object.values(users).forEach(user => {
       totalBalance += user.wallet || 0;
-      if (user.kyc === 'pending') pendingKyc++;
-      if (user.kyc === 'approved') approvedKyc++;
+      
+      // FIXED: Check both kyc and kycStatus
+      const kycStatus = user.kycStatus || user.kyc || 'pending';
+      
+      if (kycStatus === 'pending') pendingKyc++;
+      if (kycStatus === 'approved') approvedKyc++;
       if (user.virtualAccount) usersWithVirtualAccounts++;
       if (user.bvn) usersWithBVN++;
       if (user.bvnVerified) usersWithVerifiedBVN++;
@@ -1241,111 +1393,4 @@ async function handleBackToAdmin(ctx, users, transactions, CONFIG) {
     console.error('❌ Back to admin error:', error);
     ctx.answerCbQuery('❌ Error loading admin panel');
   }
-}
-
-// Helper functions
-async function checkVTUBalance(CONFIG) {
-  try {
-    console.log('🔍 Checking VTU balance...');
-    const response = await axios.get(`${CONFIG.VTU_BASE_URL}/user/`, {
-      headers: {
-        'Authorization': `Token ${CONFIG.VTU_API_KEY}`,
-        'Content-Type': 'application/json',
-        'Accept': 'application/json'
-      },
-      timeout: 15000
-    });
-    
-    return response.data;
-  } catch (error) {
-    console.error('❌ VTU Balance API Error:', error.message);
-    return {
-      balance: '121.63',
-      wallet_balance: '121.63',
-      currency: 'NGN',
-      status: 'active',
-      name: 'Liteway VTU',
-      email: 'admin@liteway.com'
-    };
-  }
-}
-
-function getAvailableNetworks() {
-  return ['MTN', 'Glo', 'AIRTEL', '9MOBILE'];
-}
-
-function getAvailableValidities(network) {
-  const validities = [];
-  const networkFolder = network === 'Glo' ? 'Glo' : network;
-  const basePath = process.cwd();
-  
-  if (fs.existsSync(path.join(basePath, networkFolder, 'daily.json'))) {
-    validities.push('Daily');
-  }
-  if (fs.existsSync(path.join(basePath, networkFolder, 'weekly.json'))) {
-    validities.push('Weekly');
-  }
-  if (fs.existsSync(path.join(basePath, networkFolder, 'monthly.json'))) {
-    validities.push('Monthly');
-  }
-  
-  return validities.length > 0 ? validities : ['Monthly'];
-}
-
-function getDataPlans(network, validityType = null, CONFIG) {
-  try {
-    const networkFolder = network === 'Glo' ? 'Glo' : network;
-    const basePath = process.cwd();
-    
-    if (validityType) {
-      const fileName = validityType.toLowerCase() + '.json';
-      const filePath = path.join(basePath, networkFolder, fileName);
-      
-      if (!fs.existsSync(filePath)) {
-        return [];
-      }
-      
-      const fileContent = fs.readFileSync(filePath, 'utf8');
-      const plans = JSON.parse(fileContent);
-      const planArray = Array.isArray(plans) ? plans : [plans];
-      
-      return planArray.map(plan => ({
-        Network: network,
-        Plan: plan.data || plan.Plan || 'N/A',
-        Validity: plan.validity || plan.Validity || validityType,
-        Price: parseFloat(plan.price || plan.Price || 0),
-        PlanID: (plan.id || plan.PlanID || '0').toString(),
-        DisplayPrice: parseFloat(plan.price || plan.Price || 0) + CONFIG.SERVICE_FEE
-      }));
-    }
-    
-    return [];
-  } catch (error) {
-    console.error(`Error loading ${network} ${validityType} plans:`, error.message);
-    return [];
-  }
-}
-
-function isAdmin(userId, adminId) {
-  return userId.toString() === adminId.toString();
-}
-
-function formatCurrency(amount) {
-  return `₦${amount.toLocaleString('en-NG')}`;
-}
-
-function escapeMarkdown(text) {
-  if (typeof text !== 'string') return text;
-  const specialChars = ['_', '*', '[', ']', '(', ')', '~', '`', '>', '#', '+', '-', '=', '|', '{', '}', '.', '!'];
-  let escapedText = text;
-  specialChars.forEach(char => {
-    const regex = new RegExp(`\\${char}`, 'g');
-    escapedText = escapedText.replace(regex, `\\${char}`);
-  });
-  return escapedText;
-}
-
-function maskBVN(bvn) {
-  if (!bvn || bvn.length !== 11) return 'Invalid BVN';
-  return `${bvn.substring(0, 3)}*****${bvn.substring(8)}`;
 }
