@@ -102,12 +102,23 @@ async function resolveBankAccount(accountNumber, bankCode) {
     console.log('💼 SendMoney: Monnify account resolution response:', response.data);
     
     if (response.data && response.data.responseBody) {
+      const responseBody = response.data.responseBody;
+      
+      // Fixed: Handle cases where values might be undefined or "undefined"
       return {
         success: true,
-        accountName: response.data.responseBody.accountName || 'Unknown Account',
-        accountNumber: response.data.responseBody.accountNumber || accountNumber,
-        bankCode: response.data.responseBody.bankCode || bankCode,
-        bankName: response.data.responseBody.bankName || 'Unknown Bank'
+        accountName: responseBody.accountName && responseBody.accountName !== 'undefined' && responseBody.accountName !== 'null' 
+          ? responseBody.accountName 
+          : 'Account Holder Name',
+        accountNumber: responseBody.accountNumber && responseBody.accountNumber !== 'undefined' 
+          ? responseBody.accountNumber 
+          : accountNumber,
+        bankCode: responseBody.bankCode && responseBody.bankCode !== 'undefined' 
+          ? responseBody.bankCode 
+          : bankCode,
+        bankName: responseBody.bankName && responseBody.bankName !== 'undefined' && responseBody.bankName !== 'null'
+          ? responseBody.bankName 
+          : 'Selected Bank'
       };
     } else {
       return {
@@ -585,23 +596,31 @@ async function handleText(ctx, text, users, transactions) {
         } else {
           console.log(`💼 SendMoney: Account resolved successfully:`, resolution);
           
-          // Use the bank name from session if Monnify returns undefined
-          const resolvedBankName = resolution.bankName && resolution.bankName !== 'undefined' 
+          // Fixed: Handle undefined bank name properly
+          const resolvedBankName = resolution.bankName && resolution.bankName !== 'undefined' && resolution.bankName !== 'null'
             ? resolution.bankName 
-            : session.data.bankName;
+            : (session.data.bankName || 'Selected Bank');
+          
+          // Also handle account name
+          const resolvedAccountName = resolution.accountName && resolution.accountName !== 'undefined' && resolution.accountName !== 'null'
+            ? resolution.accountName
+            : 'Account Holder Name';
           
           sessionManager.updateStep(userId, 5, {
-            accountName: resolution.accountName,
-            accountNumber: resolution.accountNumber,
+            accountName: resolvedAccountName,
+            accountNumber: resolution.accountNumber || accountNumber,
             bankCode: resolution.bankCode || session.data.bankCode,
             bankName: resolvedBankName
           });
           
+          // Fixed: Show proper message with clear bank name
+          const bankDisplayName = resolvedBankName;
+          
           await ctx.reply(
             `✅ *ACCOUNT RESOLVED*\n\n` +
             `🔢 *Account Number\\:* ${accountNumber}\n` +
-            `📛 *Account Name\\:* ${escapeMarkdown(resolution.accountName)}\n` +
-            `🏦 *Bank\\:* ${escapeMarkdown(resolvedBankName)}\n\n` +
+            `📛 *Account Name\\:* ${escapeMarkdown(resolvedAccountName)}\n` +
+            `🏦 *Bank\\:* ${escapeMarkdown(bankDisplayName)}\n\n` +
             `💰 *Enter amount to transfer\\:*\n\n` +
             `💸 *Fee\\:* ${CONFIG.TRANSFER_FEE_PERCENTAGE}%\n` +
             `💰 *Min\\:* ${formatCurrency(CONFIG.MIN_TRANSFER_AMOUNT)}\n` +
@@ -636,11 +655,12 @@ async function handleText(ctx, text, users, transactions) {
       // Manual account name entry
       const accountName = text.substring(0, 100);
       console.log(`💼 SendMoney: Manual account name entered: ${accountName}`);
+      
       sessionManager.updateStep(userId, 5, {
         accountName: accountName,
         accountNumber: session.data.accountNumber,
         bankCode: session.data.bankCode,
-        bankName: session.data.bankName || 'Unknown Bank'
+        bankName: session.data.bankName || 'Selected Bank'
       });
       
       await ctx.reply(
@@ -690,11 +710,13 @@ async function handleText(ctx, text, users, transactions) {
         totalAmount: total
       });
       
+      const bankDisplayName = session.data.bankName === 'Selected Bank' ? 'Selected Bank' : session.data.bankName;
+      
       await ctx.reply(
         `📋 *TRANSFER SUMMARY*\n\n` +
         `📛 *To\\:* ${escapeMarkdown(session.data.accountName)}\n` +
         `🔢 *Account\\:* ${session.data.accountNumber}\n` +
-        `🏦 *Bank\\:* ${escapeMarkdown(session.data.bankName)}\n` +
+        `🏦 *Bank\\:* ${escapeMarkdown(bankDisplayName)}\n` +
         `💰 *Amount\\:* ${formatCurrency(amount)}\n` +
         `💸 *Fee\\:* ${formatCurrency(fee)}\n` +
         `💵 *Total Deducted\\:* ${formatCurrency(total)}\n\n` +
@@ -815,11 +837,13 @@ async function handleText(ctx, text, users, transactions) {
           } else {
             transaction.status = 'completed';
             
+            const bankDisplayName = bankName === 'Selected Bank' ? 'Selected Bank' : bankName;
+            
             await ctx.reply(
               `✅ *TRANSFER INITIATED SUCCESSFULLY\\!*\n\n` +
               `📛 *To\\:* ${escapeMarkdown(accountName)}\n` +
               `🔢 *Account\\:* ${accountNumber}\n` +
-              `🏦 *Bank\\:* ${escapeMarkdown(bankName)}\n` +
+              `🏦 *Bank\\:* ${escapeMarkdown(bankDisplayName)}\n` +
               `💰 *Amount\\:* ${formatCurrency(amount)}\n` +
               `💸 *Fee\\:* ${formatCurrency(fee)}\n` +
               `💵 *Total Deducted\\:* ${formatCurrency(totalAmount)}\n` +
