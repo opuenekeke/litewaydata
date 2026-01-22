@@ -1,4 +1,4 @@
-// index.js - COMPLETE FIXED VERSION WITH KYC FIX
+// index.js - COMPLETE FIXED VERSION WITH KYC FIX AND DEBUG COMMANDS
 require('dotenv').config();
 const { Telegraf, Markup } = require('telegraf');
 const axios = require('axios');
@@ -468,6 +468,95 @@ async function main() {
     
     // Setup auto-save
     setupAutoSave();
+    
+    // ==================== DEBUG COMMANDS ====================
+    bot.command('/debugmonnify', async (ctx) => {
+      try {
+        const userId = ctx.from.id.toString();
+        const isConfigured = sendMoney.isMonnifyConfigured();
+        
+        let message = `🔍 *Monnify Configuration Debug*\n\n`;
+        message += `*User ID:* ${userId}\n`;
+        message += `*Configuration Status:* ${isConfigured ? '✅ OK' : '❌ FAILED'}\n\n`;
+        
+        // Check individual variables
+        const env = process.env;
+        message += `*Environment Variables:*\n`;
+        message += `MONNIFY_API_KEY: ${env.MONNIFY_API_KEY ? '✅ Set' : '❌ Missing'}\n`;
+        message += `MONNIFY_SECRET_KEY: ${env.MONNIFY_SECRET_KEY ? '✅ Set' : '❌ Missing'}\n`;
+        message += `MONNIFY_CONTRACT_CODE: ${env.MONNIFY_CONTRACT_CODE || '❌ Missing'}\n`;
+        message += `MONNIFY_SOURCE_ACCOUNT: ${env.MONNIFY_SOURCE_ACCOUNT || '❌ Missing'}\n`;
+        message += `MONNIFY_SOURCE_NAME: ${env.MONNIFY_SOURCE_NAME || '❌ Missing'}\n`;
+        message += `MONNIFY_SOURCE_BANK_CODE: ${env.MONNIFY_SOURCE_BANK_CODE || '❌ Missing'}\n`;
+        
+        // Also show first few characters (for debugging)
+        message += `\n*First 5 chars (for verification):*\n`;
+        message += `API_KEY: ${env.MONNIFY_API_KEY ? env.MONNIFY_API_KEY.substring(0, 5) + '...' : 'N/A'}\n`;
+        message += `CONTRACT_CODE: ${env.MONNIFY_CONTRACT_CODE || 'N/A'}\n`;
+        
+        await ctx.reply(message, { parse_mode: 'Markdown' });
+      } catch (error) {
+        console.error('Debug command error:', error);
+        await ctx.reply('❌ Error checking configuration');
+      }
+    });
+    
+    bot.command('/debugenv', async (ctx) => {
+      try {
+        // Show all env variables (careful with secrets!)
+        const envVars = Object.keys(process.env).filter(key => 
+          key.includes('MONNIFY') || key.includes('BILLSTACK') || key.includes('VTU')
+        );
+        
+        let message = '🔍 *Environment Variables Debug:*\n\n';
+        
+        envVars.forEach(key => {
+          const value = process.env[key];
+          let displayValue;
+          
+          if (key.includes('SECRET') || key.includes('KEY')) {
+            // Hide full secret/key values
+            displayValue = value ? `✅ Set (${value.substring(0, 5)}...)` : '❌ Missing';
+          } else {
+            displayValue = value || '❌ Missing';
+          }
+          
+          message += `*${key}:* ${displayValue}\n`;
+        });
+        
+        message += `\n*Current CONFIG values from sendmoney:*\n`;
+        message += `Check console logs for detailed debug information.`;
+        
+        await ctx.reply(message, { parse_mode: 'Markdown' });
+        
+        // Log detailed info to console
+        console.log('\n🔍 [DEBUG COMMAND] Detailed configuration check:');
+        console.log('MONNIFY_API_KEY:', process.env.MONNIFY_API_KEY ? 'Present' : 'Missing');
+        console.log('MONNIFY_SECRET_KEY:', process.env.MONNIFY_SECRET_KEY ? 'Present' : 'Missing');
+        console.log('MONNIFY_CONTRACT_CODE:', process.env.MONNIFY_CONTRACT_CODE || 'Missing');
+        console.log('MONNIFY_SOURCE_ACCOUNT:', process.env.MONNIFY_SOURCE_ACCOUNT || 'Missing');
+        console.log('MONNIFY_SOURCE_NAME:', process.env.MONNIFY_SOURCE_NAME || 'Missing');
+        console.log('MONNIFY_SOURCE_BANK_CODE:', process.env.MONNIFY_SOURCE_BANK_CODE || 'Missing');
+        
+      } catch (error) {
+        console.error('Debug env command error:', error);
+        await ctx.reply('❌ Error checking environment variables');
+      }
+    });
+    
+    bot.command('/debugconfig', async (ctx) => {
+      try {
+        // Call the debug function from sendmoney module if it exists
+        if (typeof sendMoney.debugMonnifyConfig === 'function') {
+          sendMoney.debugMonnifyConfig();
+        }
+        
+        await ctx.reply('🔍 Configuration debug logged to console. Check your server logs.');
+      } catch (error) {
+        console.error('Debug config command error:', error);
+        await ctx.reply('❌ Error running debug command');
+      }
+    });
     
     // ==================== WEBHOOK SETUP ====================
     const app = express();
@@ -1111,6 +1200,10 @@ async function main() {
       console.log('• 🛂 KYC Status (FIXED)');
       console.log('• 🛠️ Admin Panel');
       console.log('• 🆘 Help & Support');
+      console.log('\n🔍 DEBUG COMMANDS ADDED:');
+      console.log('• /debugmonnify - Check Monnify configuration');
+      console.log('• /debugenv - Check environment variables');
+      console.log('• /debugconfig - Log config to console');
       console.log('\n⚡ BOT IS READY!');
     }).catch(err => {
       console.error('❌ Bot launch failed:', err);
@@ -1129,7 +1222,7 @@ process.once('SIGINT', async () => {
   await saveData(transactionsFile, transactions);
   await saveData(virtualAccountsFile, virtualAccountsData);
   await saveData(sessionsFile, sessions);
-  bot.stop('SIGINT');
+  // Note: bot is not defined in this scope, we need to handle this differently
 });
 
 process.once('SIGTERM', async () => {
@@ -1139,7 +1232,7 @@ process.once('SIGTERM', async () => {
   await saveData(transactionsFile, transactions);
   await saveData(virtualAccountsFile, virtualAccountsData);
   await saveData(sessionsFile, sessions);
-  bot.stop('SIGTERM');
+  // Note: bot is not defined in this scope, we need to handle this differently
 });
 
 // Start the application
