@@ -1,4 +1,4 @@
-// index.js - COMPLETE FIXED VERSION WITH ALL FIXES
+// index.js - COMPLETE FIXED VERSION WITH KYC FIX
 require('dotenv').config();
 const { Telegraf, Markup } = require('telegraf');
 const axios = require('axios');
@@ -149,7 +149,6 @@ async function initUser(userId) {
       kycApprovedDate: isAdminUser ? new Date().toISOString() : null,
       kycRejectedDate: null,
       kycRejectionReason: null,
-      // Add KYC fields
       kycSubmitted: false,
       kycDocument: null,
       kycDocumentType: null,
@@ -192,8 +191,11 @@ const userMethods = {
 
   getKycStatus: async (telegramId) => {
     const user = users[telegramId];
-    if (!user) await initUser(telegramId);
-    return users[telegramId]?.kycStatus || 'pending';
+    if (!user) {
+      await initUser(telegramId);
+      return 'pending';
+    }
+    return user.kycStatus || 'pending';
   },
 
   checkKyc: async (telegramId) => {
@@ -202,7 +204,7 @@ const userMethods = {
       await initUser(telegramId);
       return false;
     }
-    return user.kycStatus === 'approved';
+    return (user.kycStatus || 'pending') === 'approved';
   },
 
   approveKyc: async (telegramId, adminId) => {
@@ -369,8 +371,6 @@ const NETWORK_CODES = {
   'AIRTEL': '4'
 };
 
-const AVAILABLE_NETWORKS = ['MTN', 'Glo', 'AIRTEL', '9MOBILE'];
-
 function isAdmin(userId) {
   return userId.toString() === CONFIG.ADMIN_ID.toString();
 }
@@ -408,6 +408,50 @@ function isValidEmail(email) {
   if (!email) return false;
   const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
   return emailRegex.test(email);
+}
+
+// ==================== KYC CHECK FUNCTION ====================
+async function checkKYCAndPIN(userId, ctx) {
+  try {
+    // Ensure user exists
+    const user = await initUser(userId);
+    
+    if (!user) {
+      await ctx.reply('❌ User not found. Please use /start first.');
+      return false;
+    }
+    
+    // Safe KYC status check with fallback
+    const kycStatus = user.kycStatus || 'pending';
+    
+    // Check KYC
+    if (kycStatus !== 'approved') {
+      await ctx.reply(
+        '❌ *KYC VERIFICATION REQUIRED*\n\n' +
+        '📝 Your account needs verification\\.\n\n' +
+        `🛂 *KYC Status\\:* ${kycStatus.toUpperCase()}\n` +
+        '📞 *Contact admin\\:* @opuenekeke',
+        { parse_mode: 'MarkdownV2' }
+      );
+      return false;
+    }
+    
+    // Check PIN
+    if (!user.pin) {
+      await ctx.reply(
+        '❌ *TRANSACTION PIN NOT SET*\n\n' +
+        '🔐 *Set PIN\\:* `/setpin 1234`',
+        { parse_mode: 'MarkdownV2' }
+      );
+      return false;
+    }
+    
+    return true;
+  } catch (error) {
+    console.error('❌ KYC check error:', error);
+    await ctx.reply('❌ Error checking account status. Please try again.');
+    return false;
+  }
 }
 
 // ==================== MAIN ASYNC FUNCTION ====================
@@ -496,20 +540,23 @@ async function main() {
           virtualAccountStatus = `\n💳 *Virtual Account\\:* ⏳ CONFIG PENDING\n_Admin configuring Billstack API_`;
         }
         
+        // Safe KYC status display
+        const kycStatus = user.kycStatus || 'pending';
+        
         await ctx.reply(
           `🌟 *Welcome to Liteway VTU Bot\\!*\n\n` +
-          `⚡ *Quick Start\\:*\n` +
-          `1\\. Set PIN\\: /setpin 1234\n` +
-          `2\\. Get KYC approved\n` +
-          `3\\. Set email for virtual account\n` +
-          `4\\. Deposit funds\n` +
-          `5\\. Start buying\\!\n\n` +
-          `📱 *Services\\:*\n` +
-          `• 📞 Airtime \\(All networks\\)\n` +
-          `• 📡 Data bundles\n` +
-          `• 💰 Wallet system\n` +
-          `• 💳 Deposit via Virtual Account\n` +
-          `• 🏦 Transfer to any bank\n\n` +
+          `🛂 *KYC Status\\:* ${kycStatus.toUpperCase()}\n` +
+          `💵 *Balance\\:* ${formatCurrency(user.wallet)}\n\n` +
+          `📱 *Available Services\\:*\n` +
+          `• 📞 Buy Airtime\n` +
+          `• 📡 Buy Data\n` +
+          `• 💰 Wallet Balance\n` +
+          `• 💳 Deposit Funds\n` +
+          `• 🏦 Money Transfer\n` +
+          `• 📜 Transaction History\n` +
+          `• 🛂 KYC Status\n` +
+          `${isUserAdmin ? '• 🛠️ Admin Panel\n' : ''}` +
+          `• 🆘 Help & Support\n\n` +
           `${emailStatus}` +
           `${virtualAccountStatus}\n\n` +
           `📞 *Support\\:* @opuenekeke`,
@@ -521,41 +568,9 @@ async function main() {
         
       } catch (error) {
         console.error('❌ Start error:', error);
+        await ctx.reply('❌ Error initializing your account. Please try again.');
       }
     });
-    
-    // ==================== KYC CHECK FUNCTION ====================
-    async function checkKYCAndPIN(userId, ctx) {
-      const user = users[userId];
-      if (!user) {
-        await ctx.reply('❌ User not found. Please use /start first.');
-        return false;
-      }
-      
-      // Check KYC
-      if (user.kycStatus !== 'approved') {
-        await ctx.reply(
-          '❌ *KYC VERIFICATION REQUIRED*\n\n' +
-          '📝 Your account needs verification\\.\n\n' +
-          `🛂 *KYC Status\\:* ${user.kycStatus.toUpperCase()}\n` +
-          '📞 *Contact admin\\:* @opuenekeke',
-          { parse_mode: 'MarkdownV2' }
-        );
-        return false;
-      }
-      
-      // Check PIN
-      if (!user.pin) {
-        await ctx.reply(
-          '❌ *TRANSACTION PIN NOT SET*\n\n' +
-          '🔐 *Set PIN\\:* `/setpin 1234`',
-          { parse_mode: 'MarkdownV2' }
-        );
-        return false;
-      }
-      
-      return true;
-    }
     
     // ==================== MODULAR HANDLERS ====================
     bot.hears('📞 Buy Airtime', async (ctx) => {
@@ -586,9 +601,7 @@ async function main() {
       }
     });
     
-    bot.hears('💰 Wallet Balance', (ctx) => walletBalance.handleWallet(ctx, users, CONFIG));
-    
-    bot.hears('💳 Deposit Funds', async (ctx) => {
+    bot.hears('💰 Wallet Balance', async (ctx) => {
       try {
         const userId = ctx.from.id.toString();
         await initUser(userId);
@@ -599,12 +612,62 @@ async function main() {
           return;
         }
         
-        // Check KYC for deposit
-        if (user.kycStatus !== 'approved') {
+        let emailStatus = '';
+        let virtualAccountStatus = '';
+        const billstackConfigured = CONFIG.BILLSTACK_API_KEY && CONFIG.BILLSTACK_SECRET_KEY;
+        
+        if (billstackConfigured) {
+          if (!user.email || !isValidEmail(user.email)) {
+            emailStatus = `📧 *Email Status\\:* ❌ NOT SET\n`;
+          } else {
+            emailStatus = `📧 *Email Status\\:* ✅ SET\n`;
+          }
+          
+          if (!user.virtualAccount) {
+            virtualAccountStatus = `💳 *Virtual Account\\:* ❌ NOT CREATED\n`;
+          } else {
+            virtualAccountStatus = `💳 *Virtual Account\\:* ✅ ACTIVE\n`;
+          }
+        } else {
+          emailStatus = `📧 *Email Status\\:* ${user.email ? '✅ SET' : '❌ NOT SET'}\n`;
+          virtualAccountStatus = `💳 *Virtual Account\\:* ⏳ CONFIG PENDING\n`;
+        }
+        
+        const kycStatus = user.kycStatus || 'pending';
+        
+        await ctx.reply(
+          `💰 *YOUR BALANCE*\n\n` +
+          `💵 *Available\\:* ${formatCurrency(user.wallet)}\n` +
+          `🛂 *KYC Status\\:* ${kycStatus.toUpperCase()}\n` +
+          `${emailStatus}` +
+          `${virtualAccountStatus}` +
+          `💡 Need more funds\\? Use "💳 Deposit Funds" button`,
+          { parse_mode: 'MarkdownV2' }
+        );
+        
+      } catch (error) {
+        console.error('❌ Balance error:', error);
+        ctx.reply('❌ Error checking balance. Please try again.');
+      }
+    });
+    
+    bot.hears('💳 Deposit Funds', async (ctx) => {
+      try {
+        const userId = ctx.from.id.toString();
+        const user = await initUser(userId);
+        
+        if (!user) {
+          await ctx.reply('❌ User not found. Please use /start first.');
+          return;
+        }
+        
+        // Safe KYC check
+        const kycStatus = user.kycStatus || 'pending';
+        if (kycStatus !== 'approved') {
           await ctx.reply(
             '❌ *KYC VERIFICATION REQUIRED*\n\n' +
             '📝 Your account needs verification for deposit\\.\n\n' +
-            `🛂 *KYC Status\\:* ${user.kycStatus.toUpperCase()}\n` +
+            `🛂 *KYC Status\\:* ${kycStatus.toUpperCase()}\n` +
             '📞 *Contact admin\\:* @opuenekeke',
             { parse_mode: 'MarkdownV2' }
           );
@@ -642,7 +705,23 @@ async function main() {
       }
     });
     
-    bot.hears('📜 Transaction History', (ctx) => transactionHistory.handleHistory(ctx, users, transactions, CONFIG));
+    bot.hears('📜 Transaction History', async (ctx) => {
+      try {
+        const userId = ctx.from.id.toString();
+        await initUser(userId);
+        
+        const user = users[userId];
+        if (!user) {
+          await ctx.reply('❌ User not found. Please use /start first.');
+          return;
+        }
+        
+        return transactionHistory.handleHistory(ctx, users, transactions, CONFIG);
+      } catch (error) {
+        console.error('❌ Transaction history error:', error);
+        ctx.reply('❌ Error loading transaction history. Please try again.');
+      }
+    });
     
     bot.hears('🛂 KYC Status', async (ctx) => {
       try {
@@ -655,10 +734,11 @@ async function main() {
           return;
         }
         
+        const kycStatus = user.kycStatus || 'pending';
         let statusEmoji = '⏳';
-        if (user.kycStatus === 'approved') statusEmoji = '✅';
-        else if (user.kycStatus === 'rejected') statusEmoji = '❌';
-        else if (user.kycStatus === 'submitted') statusEmoji = '📋';
+        if (kycStatus === 'approved') statusEmoji = '✅';
+        else if (kycStatus === 'rejected') statusEmoji = '❌';
+        else if (kycStatus === 'submitted') statusEmoji = '📋';
         
         let kycInfo = '';
         if (user.kycSubmittedDate) {
@@ -680,7 +760,7 @@ async function main() {
           `📛 *Name\\:* ${user.firstName || ''} ${user.lastName || ''}\n` +
           `📧 *Email\\:* ${user.email || 'Not set'}\n` +
           `📱 *Phone\\:* ${user.phone || 'Not set'}\n\n` +
-          `🛂 *Status\\:* ${statusEmoji} ${user.kycStatus.toUpperCase()}\n\n` +
+          `🛂 *Status\\:* ${statusEmoji} ${kycStatus.toUpperCase()}\n\n` +
           `${kycInfo}\n` +
           `📞 *Support\\:* @opuenekeke`,
           { parse_mode: 'MarkdownV2' }
@@ -692,7 +772,28 @@ async function main() {
       }
     });
     
-    bot.hears('🛠️ Admin Panel', (ctx) => admin.handleAdminPanel(ctx, users, transactions, CONFIG));
+    bot.hears('🛠️ Admin Panel', async (ctx) => {
+      try {
+        const userId = ctx.from.id.toString();
+        await initUser(userId);
+        
+        const user = users[userId];
+        if (!user) {
+          await ctx.reply('❌ User not found. Please use /start first.');
+          return;
+        }
+        
+        if (!isAdmin(userId)) {
+          await ctx.reply('❌ Admin access only.');
+          return;
+        }
+        
+        return admin.handleAdminPanel(ctx, users, transactions, CONFIG);
+      } catch (error) {
+        console.error('❌ Admin panel error:', error);
+        ctx.reply('❌ Error loading admin panel. Please try again.');
+      }
+    });
     
     bot.hears('🆘 Help & Support', async (ctx) => {
       try {
@@ -732,6 +833,7 @@ async function main() {
         
       } catch (error) {
         console.error('❌ Help error:', error);
+        ctx.reply('❌ Error loading help. Please try again.');
       }
     });
     
@@ -762,6 +864,7 @@ async function main() {
         
       } catch (error) {
         console.error('❌ Setpin error:', error);
+        ctx.reply('❌ Error setting PIN. Please try again.');
       }
     });
     
@@ -791,10 +894,12 @@ async function main() {
           virtualAccountStatus = `💳 *Virtual Account\\:* ⏳ CONFIG PENDING\n`;
         }
         
+        const kycStatus = user.kycStatus || 'pending';
+        
         await ctx.reply(
           `💰 *YOUR BALANCE*\n\n` +
           `💵 *Available\\:* ${formatCurrency(user.wallet)}\n` +
-          `🛂 *KYC Status\\:* ${user.kycStatus.toUpperCase()}\n` +
+          `🛂 *KYC Status\\:* ${kycStatus.toUpperCase()}\n` +
           `${emailStatus}` +
           `${virtualAccountStatus}` +
           `💡 Need more funds\\? Use "💳 Deposit Funds" button`,
@@ -802,7 +907,8 @@ async function main() {
         );
         
       } catch (error) {
-        console.error('❌ Balance error:', error);
+        console.error('❌ Balance command error:', error);
+        ctx.reply('❌ Error checking balance. Please try again.');
       }
     });
     
@@ -896,9 +1002,11 @@ async function main() {
           ['🛂 KYC Status', '🆘 Help & Support']
         ];
         
+        const kycStatus = user.kycStatus || 'pending';
+        
         await ctx.editMessageText(
           `🌟 *Welcome to Liteway VTU Bot\\!*\n\n` +
-          `🛂 *KYC Status\\:* ${user.kycStatus.toUpperCase()}\n` +
+          `🛂 *KYC Status\\:* ${kycStatus.toUpperCase()}\n` +
           `💵 *Balance\\:* ${formatCurrency(user.wallet)}\n\n` +
           `📱 *Available Services\\:*\n` +
           `• 📞 Buy Airtime\n` +
