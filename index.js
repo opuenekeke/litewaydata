@@ -1,4 +1,4 @@
-// index.js - COMPLETE FIXED VERSION
+// index.js - FIXED VERSION (Airtime & Data working) WITH PERSISTENCE
 require('dotenv').config();
 const { Telegraf, Markup } = require('telegraf');
 const axios = require('axios');
@@ -108,83 +108,15 @@ async function saveData(filePath, data) {
   }
 }
 
-// Load initial data
-let users = {};
-let transactions = {};
-let virtualAccountsData = {};
-let sessions = {};
+// Load initial data - WRAPPED IN ASYNC FUNCTION
+let users, transactions, virtualAccountsData, sessions;
 
 async function initializeData() {
-  try {
-    users = await loadData(usersFile, {});
-    transactions = await loadData(transactionsFile, {});
-    virtualAccountsData = await loadData(virtualAccountsFile, {});
-    sessions = await loadData(sessionsFile, {});
-    console.log('✅ All data loaded successfully');
-  } catch (error) {
-    console.error('❌ Error initializing data:', error);
-  }
+  users = await loadData(usersFile, {});
+  transactions = await loadData(transactionsFile, {});
+  virtualAccountsData = await loadData(virtualAccountsFile, {});
+  sessions = await loadData(sessionsFile, {});
 }
-
-// Initialize virtualAccounts object with methods
-const virtualAccounts = {
-  // Find virtual account by user ID
-  findByUserId: async (telegramId) => {
-    const user = users[telegramId];
-    if (user && user.virtualAccount) {
-      return {
-        user_id: telegramId,
-        ...user.virtualAccount
-      };
-    }
-    return null;
-  },
-
-  // Create new virtual account
-  create: async (accountData) => {
-    const userId = accountData.user_id;
-    if (!users[userId]) {
-      await initUser(userId);
-    }
-    
-    users[userId].virtualAccount = {
-      bank_name: accountData.bank_name,
-      account_number: accountData.account_number,
-      account_name: accountData.account_name,
-      reference: accountData.reference,
-      provider: accountData.provider || 'billstack',
-      created_at: accountData.created_at || new Date(),
-      is_active: accountData.is_active !== undefined ? accountData.is_active : true
-    };
-    
-    users[userId].virtualAccountNumber = accountData.account_number;
-    users[userId].virtualAccountBank = accountData.bank_name;
-    
-    // Also save to virtualAccountsData for quick lookup
-    virtualAccountsData[userId] = users[userId].virtualAccount;
-    
-    // Save immediately
-    await saveData(usersFile, users);
-    await saveData(virtualAccountsFile, virtualAccountsData);
-    
-    return users[userId].virtualAccount;
-  },
-
-  // Find virtual account by account number
-  findByAccountNumber: async (accountNumber) => {
-    // First check virtualAccountsData
-    for (const userId in virtualAccountsData) {
-      const account = virtualAccountsData[userId];
-      if (account.account_number === accountNumber) {
-        return {
-          user_id: userId,
-          ...account
-        };
-      }
-    }
-    return null;
-  }
-};
 
 // Auto-save data every 30 seconds
 setInterval(async () => {
@@ -237,6 +169,61 @@ async function initUser(userId) {
   }
   return users[userId];
 }
+
+// Add virtual account database methods with persistence
+virtualAccounts.findByUserId = async (telegramId) => {
+  const user = users[telegramId];
+  if (user && user.virtualAccount) {
+    return {
+      user_id: telegramId,
+      ...user.virtualAccount
+    };
+  }
+  return null;
+};
+
+virtualAccounts.create = async (accountData) => {
+  const userId = accountData.user_id;
+  if (!users[userId]) {
+    await initUser(userId);
+  }
+  
+  users[userId].virtualAccount = {
+    bank_name: accountData.bank_name,
+    account_number: accountData.account_number,
+    account_name: accountData.account_name,
+    reference: accountData.reference,
+    provider: accountData.provider || 'billstack',
+    created_at: accountData.created_at || new Date(),
+    is_active: accountData.is_active !== undefined ? accountData.is_active : true
+  };
+  
+  users[userId].virtualAccountNumber = accountData.account_number;
+  users[userId].virtualAccountBank = accountData.bank_name;
+  
+  // Also save to virtualAccountsData for quick lookup
+  virtualAccountsData[userId] = users[userId].virtualAccount;
+  
+  // Save immediately
+  await saveData(usersFile, users);
+  await saveData(virtualAccountsFile, virtualAccountsData);
+  
+  return users[userId].virtualAccount;
+};
+
+virtualAccounts.findByAccountNumber = async (accountNumber) => {
+  // First check virtualAccountsData
+  for (const userId in virtualAccountsData) {
+    const account = virtualAccountsData[userId];
+    if (account.account_number === accountNumber) {
+      return {
+        user_id: userId,
+        ...account
+      };
+    }
+  }
+  return null;
+};
 
 // Add transaction methods with persistence
 transactions.create = async (txData) => {
@@ -844,7 +831,7 @@ bot.on('text', async (ctx) => {
       return;
     }
     
-    // Handle send money text
+    // Handle send money text - FIXED: Don't pass sessionManager parameter
     const sendMoneyHandled = await sendMoney.handleText(ctx, text, users, transactions);
     if (sendMoneyHandled) {
       return;
